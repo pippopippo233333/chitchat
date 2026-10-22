@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from 'svelte';
   import Icon from './Icon.svelte';
+  import Appearance from './Appearance.svelte';import{applyTheme,loadTheme,storeTheme}from'./lib/theme';
   import{prepareNotifications,knownNotificationTarget,enablePush,disablePush,type NotificationTarget}from'./lib/desktop-notifications';
   import SearchPanel from './SearchPanel.svelte';
   import NotificationSettings from './NotificationSettings.svelte';
@@ -37,6 +38,8 @@
   let origin = location.origin;
   let hostInput = origin;
   let savedServers=loadSavedServers();
+  let themeColor=loadTheme();
+  function savedTheme(color:string|null){themeColor=color;applyTheme(color);storeTheme(color);}
   let host: HostInfo | null = null;
   let selected: ServerSummary | null = null;
   let api = new Api(origin);
@@ -53,7 +56,7 @@
   const voiceAvailable = secureVoiceAvailable();
   const channelViews = new Map<string, { messages: Message[]; hasOlder: boolean; scrollTop: number; atBottom: boolean }>();
   let status: ConnectionStatus = 'offline';
-  let modal: 'host' | 'servers' | 'auth' | 'channel' | 'delete' | 'link' | 'admin' | 'member' | 'channel-settings' | 'media' | 'ai-review' | 'browse' | 'saved' | 'host-create' | 'search' | 'notifications' | 'dm-picker' | null = 'servers';
+  let modal: 'host' | 'servers' | 'auth' | 'channel' | 'delete' | 'link' | 'admin' | 'member' | 'channel-settings' | 'media' | 'ai-review' | 'browse' | 'saved' | 'host-create' | 'search' | 'notifications' | 'dm-picker' | 'appearance' | null = 'servers';
   let hubHostServers:HostServer[]|null=null;
   async function openServerHub(){error='';modal='saved';hubHostServers=null;const currentApi=api;if(!snapshot)return;try{const servers=await currentApi.request<HostServer[]>('/host/servers');if(api===currentApi)hubHostServers=servers;}catch{/* Host tools are shown only after the host confirms administrator access. */}}
   let aiFlags: AiFlag[] = [], latestAiFlag: AiFlag | null = null, aiMore = false, aiLoading = false;
@@ -538,7 +541,7 @@
       {#if !dms.length}<p class="small muted dm-empty">No direct messages yet.</p>{/if}{/if}
       <div class="sidebar-note"><Icon name="lock" size={13}/><br/>Hosted by your community.<br/>Accounts stay on this server.</div>
     </div>
-    <div class="user-panel"><div class="avatar">{snapshot ? initials(snapshot.user.display_name) : '?'}</div><div class="identity"><strong>{snapshot?.user.display_name ?? 'Not signed in'}</strong><span>{snapshot?.is_owner ? 'Server owner' : snapshot ? `@${snapshot.user.username}` : 'Welcome to ChitChat'}</span></div>{#if snapshot}<button class="icon-button" title="Sign out of this server" aria-label="Sign out of this server" onclick={logout}><Icon name="logout" size={17}/></button>{/if}</div>
+    <div class="user-panel"><div class="avatar">{snapshot ? initials(snapshot.user.display_name) : '?'}</div><div class="identity"><strong>{snapshot?.user.display_name ?? 'Not signed in'}</strong><span>{snapshot?.is_owner ? 'Server owner' : snapshot ? `@${snapshot.user.username}` : 'Welcome to ChitChat'}</span></div><button class="icon-button" title="Appearance" aria-label="Appearance" onclick={()=>modal='appearance'}><Icon name="palette" size={17}/></button>{#if snapshot}<button class="icon-button" title="Sign out of this server" aria-label="Sign out of this server" onclick={logout}><Icon name="logout" size={17}/></button>{/if}</div>
   </aside>
 
   <main class="main">
@@ -607,7 +610,7 @@
   {#key modal}
   <div class="modal-backdrop">
     <div class="modal" class:wide-modal={modal === 'admin' || modal === 'ai-review'} class:media-modal={modal === 'media'} role="dialog" aria-modal="true" aria-labelledby="dialog-title" tabindex="-1" use:dialog>
-      {#if snapshot}<button class="icon-button close-modal" aria-label="Close dialog" onclick={closeModal}><Icon name="close"/></button>{/if}
+      {#if snapshot||modal==='appearance'}<button class="icon-button close-modal" aria-label="Close dialog" onclick={closeModal}><Icon name="close"/></button>{/if}
       {#if modal === 'saved' || modal === 'servers' || modal === 'browse' || modal === 'host-create'}
         <nav class="server-hub-nav" aria-label="Server menu">
           <button class:active={modal==='saved'} aria-current={modal==='saved'?'page':undefined} onclick={()=>{error='';modal='saved';}}>Your servers / Add link</button>
@@ -617,7 +620,7 @@
         </nav>
       {/if}
       {#if modal==='search'&&snapshot}<SearchPanel {api} {snapshot} {dms} onJump={jumpToMessage} onLink={confirmLink}/>{#if error}<p class="error" role="alert">{error}</p>{/if}
-      {:else if modal==='notifications'&&snapshot}{#if preferencesLoaded}<NotificationSettings {api} {preferences} device={deviceNotifications} channel={active} onSaved={savedPreferences} onDevice={savedDevice}/>{:else}<h2 id="dialog-title">Notifications &amp; messages</h2><p role="status">{socialLoading?'Loading your preferences…':socialError||'Preferences are unavailable.'}</p><button class="secondary" disabled={socialLoading} onclick={()=>loadSocial()}>Retry preferences</button>{/if}
+      {:else if modal==='appearance'}<Appearance color={themeColor} onChange={savedTheme}/>{:else if modal==='notifications'&&snapshot}{#if preferencesLoaded}<NotificationSettings {api} {preferences} device={deviceNotifications} channel={active} onSaved={savedPreferences} onDevice={savedDevice}/>{:else}<h2 id="dialog-title">Notifications &amp; messages</h2><p role="status">{socialLoading?'Loading your preferences…':socialError||'Preferences are unavailable.'}</p><button class="secondary" disabled={socialLoading} onclick={()=>loadSocial()}>Retry preferences</button>{/if}
       {:else if modal==='dm-picker'&&snapshot}<h2 id="dialog-title">New direct message</h2><p class="small muted">Choose a member of this community. DMs are not end-to-end encrypted; the host administrator can read them.</p><label>Find a member<input type="search" bind:value={dmQuery} placeholder="Name or username"/></label>{#each snapshot.members.filter(m=>m.user.id!==snapshot!.user.id&&(m.user.display_name.toLocaleLowerCase().includes(dmQuery.toLocaleLowerCase())||m.user.username.toLocaleLowerCase().includes(dmQuery.toLocaleLowerCase()))).slice(0,50) as member(member.user.id)}<button class="server-choice" disabled={busy||!can(snapshot.permissions,16,snapshot.is_owner)} onclick={()=>openDirect(member.user.id)}><span>{member.user.display_name} <span class="small muted">@{member.user.username}</span></span></button>{/each}{#if error}<p class="error" role="alert">{error}</p>{/if}
       {:else if modal === 'admin' && snapshot}<AdminPanel {api} {snapshot} onCreated={createdServer} onOpen={server=>{void chooseServer(server);}} onError={scopedError(api)}/>
       {:else if modal === 'ai-review' && snapshot && can(snapshot.permissions, 2, snapshot.is_owner)}<h2 id="dialog-title">AI review queue</h2><AiReview {api} {snapshot} latest={latestAiFlag} onUpdate={updateAiFlag} onMember={member => { selectedMember = member; modal = 'member'; }}/>
@@ -682,7 +685,7 @@
         {#if new URL(pendingLink).protocol === 'http:'}<p class="small danger" style="margin-top:12px">This destination uses an unencrypted HTTP connection.</p>{/if}
         <div class="confirm-actions"><button class="secondary" onclick={closeModal}>Stay here</button><a class="primary" href={pendingLink} target="_blank" rel="noopener noreferrer" onclick={() => modal = null}>Open link<Icon name="arrow" size={16}/></a></div>
       {:else if modal === 'delete'}
-        <h2 id="dialog-title">Delete this message?</h2><p>This will permanently remove the message for everyone in the channel.</p><p class="message-text">{deleting?.content}</p>{#if error}<div class="error" role="alert">{error}</div>{/if}<div class="confirm-actions"><button class="secondary" disabled={actionBusy} onclick={closeModal}>Keep message</button><button class="primary" style="background:#ffb6b0" disabled={actionBusy} onclick={deleteMessage}>{actionBusy ? 'Deleting…' : 'Delete message'}</button></div>
+        <h2 id="dialog-title">Delete this message?</h2><p>This will permanently remove the message for everyone in the channel.</p><p class="message-text">{deleting?.content}</p>{#if error}<div class="error" role="alert">{error}</div>{/if}<div class="confirm-actions"><button class="secondary" disabled={actionBusy} onclick={closeModal}>Keep message</button><button class="primary" style="background:var(--c-ffb6b0, #ffb6b0)" disabled={actionBusy} onclick={deleteMessage}>{actionBusy ? 'Deleting…' : 'Delete message'}</button></div>
       {/if}
     </div>
   </div>

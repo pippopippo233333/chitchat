@@ -8,7 +8,7 @@
   $: known = value !== null && Number.isFinite(value);
   $: bounded = limit !== null && Number.isFinite(limit) && limit > 0;
   $: fraction = known && bounded ? Math.max(0, Math.min(1, value! / limit!)) : 0;
-  $: tone = fraction >= 0.9 ? '#ffaaa2' : fraction >= 0.7 ? '#f2cf7d' : '#a4e4c2';
+  $: tone = fraction >= 0.9 ? '#ffaaa2' : fraction >= 0.7 ? '#f2cf7d' : 'var(--accent)';
   $: used = known ? unit==='GB'?storageLabel(value!*GB):`${value!.toLocaleString(undefined,{maximumFractionDigits:2})} ${unit}` : 'Unavailable';
   $: capacity = bounded ? unit==='GB'?storageLabel(limit!*GB):`${limit!.toLocaleString(undefined,{maximumFractionDigits:2})} ${unit}` : '';
 </script>
@@ -16,9 +16,9 @@
   <figcaption>{label}</figcaption>
   <svg viewBox="0 0 200 116" role="img" aria-label={`${label}: ${known ? used : 'unavailable'}${bounded ? ` out of ${capacity}` : ', no limit set'}`}>
     <path d="M20 100 A80 80 0 0 1 180 100" fill="none" stroke="currentColor" opacity="0.13" stroke-width="13" stroke-linecap="round"/>
-    <path d="M20 100 A80 80 0 0 1 180 100" fill="none" stroke={tone} stroke-width="13" stroke-linecap="round" pathLength="100" stroke-dasharray={`${fraction * 100} 100`} opacity={fraction ? 1 : 0}/>
-    <line x1="100" y1="100" x2="100" y2="39" stroke={tone} stroke-width="3" stroke-linecap="round" transform={`rotate(${-90 + fraction * 180} 100 100)`}/>
-    <circle cx="100" cy="100" r="6" fill={tone}/>
+    <path d="M20 100 A80 80 0 0 1 180 100" fill="none" style:stroke={tone} stroke-width="13" stroke-linecap="round" pathLength="100" stroke-dasharray={`${fraction * 100} 100`} opacity={fraction ? 1 : 0}/>
+    <line x1="100" y1="100" x2="100" y2="39" style:stroke={tone} stroke-width="3" stroke-linecap="round" transform={`rotate(${-90 + fraction * 180} 100 100)`}/>
+    <circle cx="100" cy="100" r="6" style:fill={tone}/>
     <text x="12" y="115">0</text><text x="188" y="115" text-anchor="end">{bounded ? capacity : 'No limit'}</text>
   </svg>
   <p><strong>{used}</strong>{bounded ? ` out of ${capacity}` : ' · No limit set'}</p>
