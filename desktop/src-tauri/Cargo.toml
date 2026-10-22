@@ -1,0 +1,25 @@
+[package]
+name = "chitchat-desktop"
+version = "0.1.0"
+description = "ChitChat desktop app"
+license = "AGPL-3.0-only"
+edition = "2024"
+
+# Not part of the host workspace: it needs the desktop webview libraries to build.
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-notification = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-opener = "2"
+url = "2"
+
+[profile.release]
+lto = "thin"
+strip = true
+codegen-units = 1

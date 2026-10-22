@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from 'svelte';
   import Icon from './Icon.svelte';
-  import Appearance from './Appearance.svelte';import{applyTheme,loadTheme,storeTheme}from'./lib/theme';
+  import Appearance from './Appearance.svelte';import{isDesktopApp,desktopNotify}from'./lib/desktop';import{applyTheme,loadTheme,storeTheme}from'./lib/theme';
   import{prepareNotifications,knownNotificationTarget,enablePush,disablePush,type NotificationTarget}from'./lib/desktop-notifications';
   import SearchPanel from './SearchPanel.svelte';
   import NotificationSettings from './NotificationSettings.svelte';
@@ -156,7 +156,7 @@
   function refreshReadCounts(){clearTimeout(readRefreshTimer);const target=api;readRefreshTimer=setTimeout(async()=>{const before=readStates;try{const rows=await target.request<ReadState[]>('/read-states','GET',undefined,socialAbort?.signal);if(target===api)readStates=readStates===before?rows:mergeReads(readStates,rows);}catch{/* Visible channel activity or the next metadata refresh retries. */}},500);}
   function readVisibility(){if(document.visibilityState==='visible'){scheduleAck();if(snapshot&&!socialLoading)void loadSocial();}}
   function playNotification(){if(!deviceNotifications.sound||!deviceNotifications.volume)return;soundAudio??=new Audio('/sounds/notification.mp3');soundAudio.volume=deviceNotifications.volume/100;soundAudio.currentTime=0;void soundAudio.play().catch(()=>{if(!soundBlocked){soundBlocked=true;notify('Notification sound was blocked. Open Notifications and use Test sound to enable it.');}});}
-  async function desktopNotice(title:string,body:string,tag:string,target:NotificationTarget){if(!deviceNotifications.desktop||document.visibilityState!=='hidden'||typeof Notification==='undefined'||Notification.permission!=='granted')return;try{const registration=await prepareNotifications();if(!deviceNotifications.desktop||document.visibilityState!=='hidden')return;if(registration){await registration.showNotification(title,{body,tag,silent:true,data:target});}else{const notice=new Notification(title,{body,tag,silent:true});notice.onclick=()=>{notice.close();window.focus();void activateNotification(target);};}}catch{notify('Browser notifications could not be displayed. Check notification settings.');}}
+  async function desktopNotice(title:string,body:string,tag:string,target:NotificationTarget){if(isDesktopApp){if(deviceNotifications.desktop&&(document.visibilityState==='hidden'||!document.hasFocus()))try{await desktopNotify(title,body);}catch{/* The app refused (another page); nothing to show. */}return;}if(!deviceNotifications.desktop||document.visibilityState!=='hidden'||typeof Notification==='undefined'||Notification.permission!=='granted')return;try{const registration=await prepareNotifications();if(!deviceNotifications.desktop||document.visibilityState!=='hidden')return;if(registration){await registration.showNotification(title,{body,tag,silent:true,data:target});}else{const notice=new Notification(title,{body,tag,silent:true});notice.onclick=()=>{notice.close();window.focus();void activateNotification(target);};}}catch{notify('Browser notifications could not be displayed. Check notification settings.');}}
   async function activateNotification(value:unknown){const target=knownNotificationTarget(value,savedServers);if(!target)return;if(target.origin===origin&&target.slug===api.slug&&snapshot){modal=null;if(target.channel_id){let channel=snapshot.channels.find(c=>c.id===target.channel_id)??(dms.find(d=>d.id===target.channel_id)?dmChannel(dms.find(d=>d.id===target.channel_id)!):undefined);if(!channel){await loadSocial();channel=dms.find(d=>d.id===target.channel_id)?dmChannel(dms.find(d=>d.id===target.channel_id)!):undefined;}if(channel)await openChannel(channel);}}else{pendingNotificationTarget=target;await connectTarget(target);}}
   function notificationClick(event:MessageEvent){if(event.data?.type==='notification_click')void activateNotification(event.data.target);}
 
@@ -291,7 +291,7 @@
     const data = event.data;
     if (event.type === 'ready') {
       snapshot = data as Snapshot; selected = snapshot.server; rememberJoined(snapshot.server);modal = null; error = '';
-      void refreshAiFlags();if(deviceNotifications.desktop&&typeof Notification!=='undefined'&&Notification.permission==='granted')void enablePush([api]);
+      void refreshAiFlags();if(!isDesktopApp&&deviceNotifications.desktop&&typeof Notification!=='undefined'&&Notification.permission==='granted')void enablePush([api]);
       dms=snapshot.dms??dms;preferences=snapshot.preferences??preferences;readStates=mergeReads(readStates,snapshot.read_states??[]);
       voiceStates = snapshot.voice_states ?? []; voiceSpeaking = {}; channelViews.clear();
       const requested=pendingNotificationTarget;const desiredId=requested?.origin===api.origin&&requested.slug===api.slug?requested.channel_id:new URLSearchParams(location.search).get('channel');if(requested?.origin===api.origin&&requested.slug===api.slug)pendingNotificationTarget=null;
@@ -489,7 +489,10 @@
     void (async () => {
       const noticeParams=new URLSearchParams(location.search);const noticeSlug=/^\/s\/([a-z0-9-]{2,32})/.exec(location.pathname)?.[1];const noticeTarget=knownNotificationTarget({origin:noticeParams.get('notify_host'),slug:noticeSlug,...(noticeParams.get('channel')?{channel_id:noticeParams.get('channel')}:{})},savedServers);if(noticeTarget){pendingNotificationTarget=noticeTarget;await connectTarget(noticeTarget);return;}
       // Alternate hosts persist only after an explicit choice on this browser.
-      await discover(localStorage.getItem('chitchat.host') ?? sessionStorage.getItem('chitchat.host') ?? origin);
+      const savedHost=localStorage.getItem('chitchat.host') ?? sessionStorage.getItem('chitchat.host');
+      // The desktop app is not a host itself: until you pick one, it asks where to go.
+      if(isDesktopApp&&!savedHost){modal=savedServers.length?'saved':'host';hostInput='';return;}
+      await discover(savedHost ?? origin);
       const inviteRoute = /^\/s\/([a-z0-9-]{2,32})\/invite\/([^/]+)\/?$/.exec(location.pathname);
       if (inviteRoute && host) { await joinInvite(inviteRoute[1], decodeURIComponent(inviteRoute[2])); return; }
       const routeSlug = /^\/s\/([a-z0-9-]{2,32})(?:\/|$)/.exec(location.pathname)?.[1];
@@ -649,9 +652,9 @@
         {#if error}<div class="error" role="alert">{error}</div>{/if}
         <button class="load-older" style="margin:24px auto 0" onclick={() => { error = ''; hostInput = origin; modal = 'host'; }}>Connect to another host<Icon name="arrow" size={12}/></button>
       {:else if modal === 'host'}
-        <div class="brand-mark"><Icon name="globe" size={24}/></div><h2 id="dialog-title">A different home.</h2><p>Enter the address shared by your host. Use the full address, including https:// or http://.</p><p class="current-host">Current host: <strong>{origin}</strong></p>
-        {#if origin !== location.origin}<button class="secondary return-host" disabled={busy} onclick={() => discover(location.origin)}>Back to {location.origin}</button>{/if}
-        <form onsubmit={event => { event.preventDefault(); void discover(hostInput); }}><label>Host address<input type="url" bind:value={hostInput} placeholder="https://chat.example.com" required/></label>{#if error}<div class="error" role="alert">{error}</div>{/if}<button class="primary" disabled={busy}>{busy ? 'Connecting…' : 'Connect to host'}<Icon name="arrow" size={16}/></button><button type="button" class="load-older" style="margin-bottom:0" disabled={busy} onclick={() => { modal = 'servers'; error = ''; }}>Back to servers</button></form>
+        <div class="brand-mark"><Icon name="globe" size={24}/></div><h2 id="dialog-title">{isDesktopApp&&!host?'Welcome to ChitChat.':'A different home.'}</h2>{#if isDesktopApp&&!host}<p>ChitChat has no central server: each community lives on a host that someone runs. Enter the address of the host you were invited to, for example https://chat.example.com.</p>{:else}<p>Enter the address shared by your host. Use the full address, including https:// or http://.</p><p class="current-host">Current host: <strong>{origin}</strong></p>{/if}
+        {#if origin !== location.origin&&!isDesktopApp}<button class="secondary return-host" disabled={busy} onclick={() => discover(location.origin)}>Back to {location.origin}</button>{/if}
+        <form onsubmit={event => { event.preventDefault(); void discover(hostInput); }}><label>Host address<input type="url" bind:value={hostInput} placeholder="https://chat.example.com" required/></label>{#if error}<div class="error" role="alert">{error}</div>{/if}<button class="primary" disabled={busy}>{busy ? 'Connecting…' : 'Connect to host'}<Icon name="arrow" size={16}/></button>{#if host}<button type="button" class="load-older" style="margin-bottom:0" disabled={busy} onclick={() => { modal = 'servers'; error = ''; }}>Back to servers</button>{:else if savedServers.length}<button type="button" class="load-older" style="margin-bottom:0" disabled={busy} onclick={() => { modal = 'saved'; error = ''; }}>Your saved servers</button>{/if}</form>
       {:else if modal === 'auth'}
         <div class="brand-mark"><Icon name="chat" size={25}/></div><h2 id="dialog-title">{api.token ? 'Signing you back in…' : mode === 'login' ? 'Good to have you here.' : 'Make yourself at home.'}</h2><p>{selected?.name} · {new URL(origin).host}<br/>Your account stays with this community.</p>
         {#if api.token}<p class="notice" role="status">Restoring your saved sign-in. {status === 'reconnecting' ? 'Waiting for the host to reconnect…' : 'Connecting to live chat…'}</p><button class="secondary" onclick={startConnection}>Retry saved sign-in</button><button class="load-older" onclick={()=>{clearContext();modal='servers';error='';}}>Choose another server</button>

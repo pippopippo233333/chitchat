@@ -10,3 +10,8 @@ __pycache__/
 
 __pycache__/
 .public/
+
+# Desktop app build output
+desktop/node_modules/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
