@@ -191,6 +191,59 @@ ALTER TABLE attachments ADD COLUMN voice INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE server ADD COLUMN voice_messages INTEGER NOT NULL DEFAULT 1;
 "#;
 
+/// Search, mentions, direct messages, unread tracking and notification preferences.
+const SCHEMA_V10: &str = r#"
+-- 0 = none, 1 = @everyone, 2 = @here (only set when the author may ping everyone).
+ALTER TABLE messages ADD COLUMN mention_everyone INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE message_mentions (
+    message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    target_id INTEGER NOT NULL,
+    PRIMARY KEY (message_id, kind, target_id)
+) WITHOUT ROWID;
+CREATE INDEX message_mentions_target ON message_mentions(kind, target_id, message_id);
+
+-- A direct message is a channel of type 'dm' between dm_a < dm_b.
+ALTER TABLE channels ADD COLUMN dm_a INTEGER REFERENCES users(id) ON DELETE CASCADE;
+ALTER TABLE channels ADD COLUMN dm_b INTEGER REFERENCES users(id) ON DELETE CASCADE;
+CREATE UNIQUE INDEX channels_dm ON channels(dm_a, dm_b) WHERE type = 'dm';
+
+CREATE TABLE read_states (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    last_read_id INTEGER NOT NULL,
+    PRIMARY KEY (user_id, channel_id)
+) WITHOUT ROWID;
+-- Everything sent before this upgrade counts as read.
+INSERT INTO read_states (user_id, channel_id, last_read_id)
+    SELECT u.id, m.channel_id, MAX(m.id) FROM users u, messages m GROUP BY u.id, m.channel_id;
+
+ALTER TABLE users ADD COLUMN notify TEXT NOT NULL DEFAULT 'all';
+ALTER TABLE users ADD COLUMN allow_dms INTEGER NOT NULL DEFAULT 1;
+CREATE TABLE channel_notify (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    level TEXT NOT NULL,
+    PRIMARY KEY (user_id, channel_id)
+) WITHOUT ROWID;
+
+-- SEND_DMS for @everyone (owners can take it away).
+UPDATE roles SET permissions = permissions | 65536 WHERE is_default = 1;
+
+CREATE VIRTUAL TABLE messages_fts USING fts5(content, content = 'messages', content_rowid = 'id', tokenize = 'unicode61 remove_diacritics 2');
+CREATE TRIGGER messages_fts_insert AFTER INSERT ON messages BEGIN
+    INSERT INTO messages_fts (rowid, content) VALUES (new.id, new.content);
+END;
+CREATE TRIGGER messages_fts_delete AFTER DELETE ON messages BEGIN
+    INSERT INTO messages_fts (messages_fts, rowid, content) VALUES ('delete', old.id, old.content);
+END;
+CREATE TRIGGER messages_fts_update AFTER UPDATE OF content ON messages BEGIN
+    INSERT INTO messages_fts (messages_fts, rowid, content) VALUES ('delete', old.id, old.content);
+    INSERT INTO messages_fts (rowid, content) VALUES (new.id, new.content);
+END;
+INSERT INTO messages_fts (messages_fts) VALUES ('rebuild');
+"#;
+
 /// Shown in the network-wide server browser (discovery.rs), opt-in.
 const SCHEMA_V8: &str = r#"
 ALTER TABLE server ADD COLUMN discoverable INTEGER NOT NULL DEFAULT 0;
@@ -293,6 +346,12 @@ async fn migrate(pool: &SqlitePool) -> Result<()> {
         let mut tx = pool.begin().await?;
         sqlx::raw_sql(SCHEMA_V9).execute(&mut *tx).await?;
         sqlx::raw_sql("PRAGMA user_version = 9").execute(&mut *tx).await?;
+        tx.commit().await?;
+    }
+    if version < 10 {
+        let mut tx = pool.begin().await?;
+        sqlx::raw_sql(SCHEMA_V10).execute(&mut *tx).await?;
+        sqlx::raw_sql("PRAGMA user_version = 10").execute(&mut *tx).await?;
         tx.commit().await?;
     }
     Ok(())
@@ -417,7 +476,14 @@ pub async fn list_categories(pool: &SqlitePool) -> sqlx::Result<Vec<CategoryOut>
     Ok(rows.iter().map(CategoryOut::from).collect())
 }
 
+/// A server channel (text or voice). Direct messages are never returned here, so channel
+/// management can't reach them; see `any_channel_row`.
 pub async fn channel_row(pool: &SqlitePool, id: i64) -> sqlx::Result<Option<ChannelRow>> {
+    sqlx::query_as("SELECT * FROM channels WHERE id = ? AND type != 'dm'").bind(id).fetch_optional(pool).await
+}
+
+/// Any channel, direct messages included.
+pub async fn any_channel_row(pool: &SqlitePool, id: i64) -> sqlx::Result<Option<ChannelRow>> {
     sqlx::query_as("SELECT * FROM channels WHERE id = ?").bind(id).fetch_optional(pool).await
 }
 
@@ -427,7 +493,7 @@ pub async fn list_channels(pool: &SqlitePool, user_perms: u64) -> sqlx::Result<V
         return Ok(Vec::new());
     }
     let rows: Vec<ChannelRow> = sqlx::query_as(
-        "SELECT c.* FROM channels c LEFT JOIN categories k ON k.id = c.category_id \
+        "SELECT c.* FROM channels c LEFT JOIN categories k ON k.id = c.category_id WHERE c.type != 'dm' \
          ORDER BY COALESCE(k.position, -1), k.id, c.position, c.id",
     )
     .fetch_all(pool)
@@ -479,7 +545,7 @@ pub async fn member(srv: &ServerCtx, user_id: i64) -> sqlx::Result<Option<Member
     Ok(Some(member_out(srv, &u, &mut roles, owner)))
 }
 
-const MESSAGE_SELECT: &str = "SELECT m.id, m.channel_id, m.content, m.created_at, m.edited_at, m.reply_to, \
+pub const MESSAGE_SELECT: &str = "SELECT m.id, m.channel_id, m.content, m.created_at, m.edited_at, m.reply_to, m.mention_everyone, \
      u.id AS author_id, u.username, u.display_name, u.avatar_url \
      FROM messages m JOIN users u ON u.id = m.author_id";
 
@@ -491,6 +557,8 @@ pub enum Page {
     Latest,
     Before(i64),
     After(i64),
+    /// Up to half the page before this message and the rest from it on (jumping to a message).
+    Around(i64),
 }
 
 /// A page of messages, always oldest → newest.
@@ -504,6 +572,23 @@ pub async fn message_page(pool: &SqlitePool, channel_id: i64, page: Page, limit:
                 .bind(limit)
                 .fetch_all(pool)
                 .await?
+        }
+        Page::Around(id) => {
+            let mut before: Vec<MessageRow> = sqlx::query_as(&format!("{MESSAGE_SELECT} WHERE m.channel_id = ? AND m.id < ? ORDER BY m.id DESC LIMIT ?"))
+                .bind(channel_id)
+                .bind(id)
+                .bind(limit / 2)
+                .fetch_all(pool)
+                .await?;
+            before.reverse();
+            let after: Vec<MessageRow> = sqlx::query_as(&format!("{MESSAGE_SELECT} WHERE m.channel_id = ? AND m.id >= ? ORDER BY m.id ASC LIMIT ?"))
+                .bind(channel_id)
+                .bind(id)
+                .bind(limit - limit / 2)
+                .fetch_all(pool)
+                .await?;
+            before.extend(after);
+            return Ok(before);
         }
         Page::After(id) => {
             return sqlx::query_as(&format!("{MESSAGE_SELECT} WHERE m.channel_id = ? AND m.id > ? ORDER BY m.id ASC LIMIT ?"))
@@ -564,12 +649,35 @@ pub async fn messages_out(srv: &ServerCtx, rows: &[MessageRow], viewer: i64) -> 
     let ids: Vec<i64> = rows.iter().map(|m| m.id).collect();
     let mut reactions = reactions_for(&srv.db, &ids, viewer).await?;
     let mut files = attachments_for(srv, &ids).await?;
+    let mut mentions = mentions_for(&srv.db, &ids).await?;
     Ok(rows
         .iter()
         .map(|m| {
             let mut out = MessageOut::new(m, reactions.remove(&m.id).unwrap_or_default());
             out.attachments = files.remove(&m.id).unwrap_or_default();
+            for (kind, target) in mentions.remove(&m.id).unwrap_or_default() {
+                if kind == "role" { &mut out.mention_roles } else { &mut out.mentions }.push(target.to_string());
+            }
             out
         })
         .collect())
+}
+
+/// (kind, target id) of each message's stored mentions.
+async fn mentions_for(pool: &SqlitePool, ids: &[i64]) -> sqlx::Result<HashMap<i64, Vec<(String, i64)>>> {
+    let mut out: HashMap<i64, Vec<(String, i64)>> = HashMap::new();
+    if ids.is_empty() {
+        return Ok(out);
+    }
+    let mut qb = QueryBuilder::new("SELECT message_id, kind, target_id FROM message_mentions WHERE message_id IN (");
+    let mut sep = qb.separated(", ");
+    for id in ids {
+        sep.push_bind(*id);
+    }
+    qb.push(")");
+    let rows: Vec<(i64, String, i64)> = qb.build_query_as().fetch_all(pool).await?;
+    for (mid, kind, target) in rows {
+        out.entry(mid).or_default().push((kind, target));
+    }
+    Ok(out)
 }

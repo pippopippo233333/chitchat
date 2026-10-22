@@ -12,7 +12,7 @@ use crate::db::{self, Page};
 use crate::events::Event;
 use crate::ids::next_id;
 use crate::models::{ChannelRow, MessageOut, now_ms, ts};
-use crate::perms::{ADD_REACTIONS, MANAGE_MESSAGES, SEND_MESSAGES, VIEW_CHANNEL};
+use crate::perms::{self, ADD_REACTIONS, MANAGE_MESSAGES, MENTION_EVERYONE, SEND_DMS, SEND_MESSAGES, VIEW_CHANNEL};
 use crate::spam::Verdict;
 
 pub const MAX_CHARS: usize = 4000;
@@ -57,15 +57,126 @@ fn check_emoji(e: &str) -> ApiResult<()> {
     Ok(())
 }
 
-/// The text channel in the path, if the caller may view it.
-async fn text_channel(auth: &Auth, id: &str) -> ApiResult<ChannelRow> {
-    auth.require(VIEW_CHANNEL).map_err(|_| ApiError::not_found("unknown_channel", "No such channel."))?;
+/// The text channel or direct message in the path, if the caller may see it.
+pub(super) async fn text_channel(auth: &Auth, id: &str) -> ApiResult<ChannelRow> {
+    let unknown = || ApiError::not_found("unknown_channel", "No such channel.");
     let id = parse_id(id, "unknown_channel")?;
-    let ch = db::channel_row(&auth.srv.db, id).await?.ok_or_else(|| ApiError::not_found("unknown_channel", "No such channel."))?;
-    if ch.kind != "text" {
-        return Err(ApiError::bad_request("This isn't a text channel."));
+    let ch = db::any_channel_row(&auth.srv.db, id).await?.ok_or_else(unknown)?;
+    match ch.kind.as_str() {
+        "text" => auth.require(VIEW_CHANNEL).map_err(|_| unknown())?,
+        "dm" if ch.dm_members().contains(&auth.user.id) => {}
+        "dm" => return Err(unknown()),
+        _ => return Err(ApiError::bad_request("This isn't a text channel.")),
     }
     Ok(ch)
+}
+
+/// Sends a channel's event to whoever may see it: everyone who can view channels, or just the
+/// two people in a direct message.
+pub fn scoped(ev: Event, ch: &ChannelRow) -> Event {
+    if ch.kind == "dm" { ev.for_users(ch.dm_members()) } else { ev.in_channel(ch.id) }
+}
+
+/// `scoped` for code that only has the channel's ID (cleanups, bans). Nothing is sent if the
+/// channel is gone.
+pub async fn emit_in(srv: &crate::host::ServerCtx, ev: Event, channel_id: i64) -> sqlx::Result<()> {
+    if let Some(ch) = db::any_channel_row(&srv.db, channel_id).await? {
+        srv.emit(scoped(ev, &ch));
+    }
+    Ok(())
+}
+
+/// Sending in a direct message: SEND_DMS, and the other person still here and accepting DMs.
+async fn check_dm_send(auth: &Auth, ch: &ChannelRow) -> ApiResult<()> {
+    auth.require(SEND_DMS)?;
+    let gone = || ApiError::forbidden("dm_unavailable", "This person is no longer on the server.");
+    let other = ch.dm_members().into_iter().find(|u| *u != auth.user.id).unwrap_or(auth.user.id);
+    let allow: Option<bool> = sqlx::query_scalar("SELECT allow_dms FROM users WHERE id = ?").bind(other).fetch_optional(&auth.srv.db).await?;
+    match allow {
+        None => Err(gone()),
+        Some(_) if super::moderation::user_banned(&auth.srv, other).await? => Err(gone()),
+        Some(false) => Err(ApiError::forbidden("dms_closed", "This person doesn't accept direct messages.")),
+        Some(true) => Ok(()),
+    }
+}
+
+/// Mentions written in a message: `<@id>`, `<@&id>`, `@everyone`, `@here`.
+#[derive(Debug, Default, PartialEq)]
+pub struct Mentions {
+    pub users: Vec<i64>,
+    pub roles: Vec<i64>,
+    /// 0 = none, 1 = @everyone, 2 = @here.
+    pub everyone: i64,
+}
+
+const MAX_MENTIONS: usize = 50;
+
+pub fn parse_mentions(content: &str) -> Mentions {
+    let mut m = Mentions::default();
+    let mut rest = content;
+    while let Some(i) = rest.find("<@") {
+        rest = &rest[i + 2..];
+        let (role, digits) = match rest.strip_prefix('&') {
+            Some(r) => (true, r),
+            None => (false, rest),
+        };
+        let end = digits.find(|c: char| !c.is_ascii_digit()).unwrap_or(digits.len());
+        if end > 0
+            && digits[end..].starts_with('>')
+            && let Some(id) = crate::ids::parse(&digits[..end])
+        {
+            let full = m.users.len() + m.roles.len() >= MAX_MENTIONS;
+            let list = if role { &mut m.roles } else { &mut m.users };
+            if !list.contains(&id) && !full {
+                list.push(id);
+            }
+        }
+    }
+    // A whole word: not part of an e-mail address or a longer word.
+    let word = |w: &str| {
+        content.match_indices(w).any(|(i, _)| {
+            let before = content[..i].chars().next_back();
+            let after = content[i + w.len()..].chars().next();
+            before.is_none_or(|c| !c.is_alphanumeric() && c != '_') && after.is_none_or(|c| !c.is_alphanumeric() && c != '_')
+        })
+    };
+    m.everyone = if word("@everyone") {
+        1
+    } else if word("@here") {
+        2
+    } else {
+        0
+    };
+    m
+}
+
+/// Stores a message's mentions (replacing earlier ones after an edit). Role pings and
+/// `@everyone`/`@here` count only with MENTION_EVERYONE; mentions in direct messages aren't kept.
+async fn store_mentions(auth: &Auth, ch: &ChannelRow, message_id: i64, content: &str) -> ApiResult<()> {
+    let m = if ch.kind == "dm" { Mentions::default() } else { parse_mentions(content) };
+    let can_ping_all = perms::has(auth.perms, MENTION_EVERYONE);
+    let mut tx = auth.srv.db.begin().await?;
+    sqlx::query("DELETE FROM message_mentions WHERE message_id = ?").bind(message_id).execute(&mut *tx).await?;
+    for u in &m.users {
+        sqlx::query("INSERT OR IGNORE INTO message_mentions (message_id, kind, target_id) SELECT ?, 'user', id FROM users WHERE id = ?")
+            .bind(message_id)
+            .bind(u)
+            .execute(&mut *tx)
+            .await?;
+    }
+    if can_ping_all {
+        for r in &m.roles {
+            sqlx::query("INSERT OR IGNORE INTO message_mentions (message_id, kind, target_id) SELECT ?, 'role', id FROM roles WHERE id = ? AND is_default = 0")
+                .bind(message_id)
+                .bind(r)
+                .execute(&mut *tx)
+                .await?;
+        }
+    }
+    let everyone = if can_ping_all { m.everyone } else { 0 };
+    sqlx::query("UPDATE messages SET mention_everyone = ? WHERE id = ?").bind(everyone).bind(message_id).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(())
 }
 
 async fn message(auth: &Auth, channel_id: i64, mid: &str) -> ApiResult<crate::models::MessageRow> {
@@ -77,6 +188,7 @@ async fn message(auth: &Auth, channel_id: i64, mid: &str) -> ApiResult<crate::mo
 pub struct PageQuery {
     before: Option<String>,
     after: Option<String>,
+    around: Option<String>,
     limit: Option<i64>,
 }
 
@@ -84,10 +196,11 @@ pub async fn list(auth: Auth, Path(p): Path<ChanPath>, Query(q): Query<PageQuery
     let ch = text_channel(&auth, &p.id).await?;
     let limit = q.limit.unwrap_or(50).clamp(1, 100);
     let cursor = |s: &str| crate::ids::parse(s).ok_or_else(|| ApiError::bad_request("Invalid cursor."));
-    let page = match (q.before.as_deref(), q.after.as_deref()) {
-        (Some(b), _) => Page::Before(cursor(b)?),
-        (None, Some(a)) => Page::After(cursor(a)?),
-        (None, None) => Page::Latest,
+    let page = match (q.around.as_deref(), q.before.as_deref(), q.after.as_deref()) {
+        (Some(a), _, _) => Page::Around(cursor(a)?),
+        (None, Some(b), _) => Page::Before(cursor(b)?),
+        (None, None, Some(a)) => Page::After(cursor(a)?),
+        (None, None, None) => Page::Latest,
     };
     let rows = db::message_page(&auth.srv.db, ch.id, page, limit).await?;
     Ok(Json(db::messages_out(&auth.srv, &rows, auth.user.id).await?))
@@ -105,7 +218,11 @@ pub struct SendReq {
 
 pub async fn create(auth: Auth, Path(p): Path<ChanPath>, Body(req): Body<SendReq>) -> ApiResult<(StatusCode, Json<MessageOut>)> {
     let ch = text_channel(&auth, &p.id).await?;
-    auth.require(SEND_MESSAGES)?;
+    if ch.kind == "dm" {
+        check_dm_send(&auth, &ch).await?;
+    } else {
+        auth.require(SEND_MESSAGES)?;
+    }
     let mut fields = BTreeMap::new();
     let attachments = super::files::check_for_message(&auth, ch.id, &req.attachment_ids).await?;
     let content =
@@ -172,11 +289,16 @@ pub async fn create(auth: Auth, Path(p): Path<ChanPath>, Body(req): Body<SendReq
         }
     }
     tx.commit().await?;
+    store_mentions(&auth, &ch, id, &content).await?;
+    // Your own message is read.
+    super::notify::mark_read(&auth.srv, auth.user.id, ch.id, id).await?;
     let row = db::message_row(&auth.srv.db, ch.id, id).await?.ok_or_else(ApiError::internal)?;
     let mut out = db::messages_out(&auth.srv, std::slice::from_ref(&row), 0).await?.remove(0);
     out.nonce = req.nonce;
-    auth.srv.emit(Event::new("message_create", &out).in_channel(ch.id));
-    crate::ai::submit(&auth.srv, crate::ai::Job { message_id: id, channel_id: ch.id, author_id: auth.user.id, content: content.clone() }, auth.is_owner);
+    auth.srv.emit(scoped(Event::new("message_create", &out), &ch));
+    if ch.kind != "dm" {
+        crate::ai::submit(&auth.srv, crate::ai::Job { message_id: id, channel_id: ch.id, author_id: auth.user.id, content: content.clone() }, auth.is_owner);
+    }
     Ok((StatusCode::CREATED, Json(out)))
 }
 
@@ -200,10 +322,13 @@ pub async fn edit(auth: Auth, Path(p): Path<MsgPath>, Body(req): Body<EditReq>) 
         check_content(&req.content).map_err(|e| ApiError::validation(BTreeMap::from([("content", e)])))?
     };
     sqlx::query("UPDATE messages SET content = ?, edited_at = ? WHERE id = ?").bind(&content).bind(now_ms()).bind(msg.id).execute(&auth.srv.db).await?;
+    store_mentions(&auth, &ch, msg.id, &content).await?;
     let row = db::message_row(&auth.srv.db, ch.id, msg.id).await?.ok_or_else(ApiError::internal)?;
     let broadcast = db::messages_out(&auth.srv, std::slice::from_ref(&row), 0).await?.remove(0);
-    auth.srv.emit(Event::new("message_update", &broadcast).in_channel(ch.id));
-    crate::ai::submit(&auth.srv, crate::ai::Job { message_id: msg.id, channel_id: ch.id, author_id: auth.user.id, content: content.clone() }, auth.is_owner);
+    auth.srv.emit(scoped(Event::new("message_update", &broadcast), &ch));
+    if ch.kind != "dm" {
+        crate::ai::submit(&auth.srv, crate::ai::Job { message_id: msg.id, channel_id: ch.id, author_id: auth.user.id, content: content.clone() }, auth.is_owner);
+    }
     Ok(Json(db::messages_out(&auth.srv, &[row], auth.user.id).await?.remove(0)))
 }
 
@@ -211,6 +336,10 @@ pub async fn delete(auth: Auth, Path(p): Path<MsgPath>) -> ApiResult<StatusCode>
     let ch = text_channel(&auth, &p.id).await?;
     let msg = message(&auth, ch.id, &p.mid).await?;
     if msg.author_id != auth.user.id {
+        // In a direct message only the author can delete.
+        if ch.kind == "dm" {
+            return Err(ApiError::forbidden("forbidden", "You can only delete your own direct messages."));
+        }
         auth.require(MANAGE_MESSAGES)?;
     }
     sqlx::query("DELETE FROM messages WHERE id = ?").bind(msg.id).execute(&auth.srv.db).await?;
@@ -218,7 +347,7 @@ pub async fn delete(auth: Auth, Path(p): Path<MsgPath>) -> ApiResult<StatusCode>
         let preview: String = msg.content.chars().take(200).collect();
         super::moderation::audit(&auth.srv, Some(auth.user.id), "message_delete", Some(msg.author_id), json!({ "channel_id": ch.id.to_string(), "content": preview })).await;
     }
-    auth.srv.emit(Event::new("message_delete", json!({ "id": msg.id.to_string(), "channel_id": ch.id.to_string() })).in_channel(ch.id));
+    auth.srv.emit(scoped(Event::new("message_delete", json!({ "id": msg.id.to_string(), "channel_id": ch.id.to_string() })), &ch));
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -241,7 +370,7 @@ pub async fn react(auth: Auth, Path(p): Path<ReactPath>) -> ApiResult<StatusCode
         .execute(&auth.srv.db)
         .await?;
     if added.rows_affected() > 0 {
-        auth.srv.emit(reaction_event("reaction_add", &auth, ch.id, msg.id, &p.emoji));
+        auth.srv.emit(reaction_event("reaction_add", &auth, &ch, msg.id, &p.emoji));
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -252,22 +381,19 @@ pub async fn unreact(auth: Auth, Path(p): Path<ReactPath>) -> ApiResult<StatusCo
     let removed =
         sqlx::query("DELETE FROM reactions WHERE message_id = ? AND user_id = ? AND emoji = ?").bind(msg.id).bind(auth.user.id).bind(&p.emoji).execute(&auth.srv.db).await?;
     if removed.rows_affected() > 0 {
-        auth.srv.emit(reaction_event("reaction_remove", &auth, ch.id, msg.id, &p.emoji));
+        auth.srv.emit(reaction_event("reaction_remove", &auth, &ch, msg.id, &p.emoji));
     }
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn reaction_event(ty: &str, auth: &Auth, channel_id: i64, message_id: i64, emoji: &str) -> Event {
-    Event::new(
-        ty,
-        json!({
-            "message_id": message_id.to_string(),
-            "channel_id": channel_id.to_string(),
-            "emoji": emoji,
-            "user_id": auth.user.id.to_string(),
-        }),
-    )
-    .in_channel(channel_id)
+fn reaction_event(ty: &str, auth: &Auth, ch: &ChannelRow, message_id: i64, emoji: &str) -> Event {
+    let data = json!({
+        "message_id": message_id.to_string(),
+        "channel_id": ch.id.to_string(),
+        "emoji": emoji,
+        "user_id": auth.user.id.to_string(),
+    });
+    scoped(Event::new(ty, data), ch)
 }
 
 #[cfg(test)]
@@ -281,5 +407,16 @@ mod tests {
         assert_eq!(check_content(&"a".repeat(4001)), Err("too_long"));
         assert_eq!(check_content(&"a\n".repeat(61)), Err("too_many_lines"));
         assert!(check_content(&"a\n".repeat(60)).is_ok());
+    }
+
+    #[test]
+    fn mentions() {
+        let m = parse_mentions("hi <@12> and <@&34>, <@12> again, <@x> <@5 <@&> @everyone");
+        assert_eq!(m, Mentions { users: vec![12], roles: vec![34], everyone: 1 });
+        assert_eq!(parse_mentions("mail me at a@here.com or @everyones").everyone, 0);
+        assert_eq!(parse_mentions("(@here)").everyone, 2);
+        assert_eq!(parse_mentions(&"<@1>".repeat(80)).users, vec![1]);
+        let many: String = (1..80).map(|i| format!("<@{i}>")).collect();
+        assert_eq!(parse_mentions(&many).users.len(), MAX_MENTIONS);
     }
 }

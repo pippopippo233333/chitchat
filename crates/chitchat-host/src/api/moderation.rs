@@ -405,7 +405,7 @@ pub async fn ban(auth: Auth, Body(req): Body<BanReq>) -> ApiResult<(StatusCode, 
 
     kick_out(&auth.srv, target.id, "banned", &if row.reason.is_empty() { "You were banned.".to_string() } else { format!("You were banned: {}", row.reason) });
     for (mid, cid) in deleted {
-        auth.srv.emit(Event::new("message_delete", json!({ "id": mid.to_string(), "channel_id": cid.to_string() })).in_channel(cid));
+        super::messages::emit_in(&auth.srv, Event::new("message_delete", json!({ "id": mid.to_string(), "channel_id": cid.to_string() })), cid).await?;
     }
     auth.srv.emit(Event::new("member_leave", json!({ "user_id": target.id.to_string() })));
     if req.ban_ip {

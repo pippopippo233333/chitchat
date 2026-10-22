@@ -108,8 +108,10 @@ Servers the owner marked unlisted are left out (they can still be joined by slug
 | 1<<12 | CONNECT_VOICE |
 | 1<<13 | SPEAK |
 | 1<<14 | STREAM (screen share) |
+| 1<<15 | MENTION_EVERYONE (`@everyone`, `@here` and role mentions notify people) |
+| 1<<16 | SEND_DMS (open and send direct messages) |
 
-The owner implicitly has every permission.
+The owner implicitly has every permission. A new server's `@everyone` gets **78083** = VIEW_CHANNEL, SEND_MESSAGES, ADD_REACTIONS, CONNECT_VOICE, SPEAK, SEND_DMS; existing servers gained SEND_DMS on upgrade.
 
 ### Category
 ```json
@@ -583,6 +585,51 @@ Shows the snapshots made by `scripts/chitchat-backup.py` (docs/hosting.md, "Auto
 - `last_failed`: the most recent run failed (the previous good snapshots are kept).
 - `total_bytes`: the space all snapshots really use; files shared between snapshots (hard links) count once. `snapshots` is newest first; `created` is when the snapshot was finished.
 - `POST /host/backups` starts one now → `202` with the same shape (`running: true`). It starts `chitchat-backup.service` when that unit backs up this host's data into this folder (same settings as the timer), otherwise runs `python3 scripts/chitchat-backup.py backup --keep 7` from the host's working directory. `409 backup_running` if one is already running, `404 backups_not_configured` without a backup folder. Poll GET while `running` is true. Audit: `backup_run`.
+
+## 4i. Mentions, unread messages and notifications
+**Mentions** are written into the message text; the client turns autocomplete picks into tokens and renders them:
+`<@USER_ID>` a person, `<@&ROLE_ID>` a role, `<#CHANNEL_ID>` a channel link (never notifies), `@everyone`, `@here` (whole words). Every message has:
+```json
+{ "mentions": ["…user ids…"], "mention_roles": ["…role ids…"], "mention_everyone": false, "mention_here": false }
+```
+- Only existing people and roles are listed (at most 50 mentions per message). Role pings, `@everyone` and `@here` count only if the author has **MENTION_EVERYONE**; without it the text stays but nobody is pinged. Edits recompute them. DM messages keep none.
+- A message pings me when `mentions` has my id, `mention_roles` has one of my roles, `mention_everyone` is true, or `mention_here` is true and I'm online. Never my own messages.
+
+**Read states.** `GET /read-states` → one entry per text channel I can see and per DM of mine:
+```json
+[ { "channel_id": "…", "last_read_id": "…", "last_message_id": "…" | null, "mention_count": 0 } ]
+```
+- Unread = `last_message_id > last_read_id` (IDs are time-sortable; compare as BigInt or strings of equal length, not Number). A channel never opened counts from when I joined or it was made; everything sent before this feature existed counts as read.
+- `mention_count`: unread messages that ping me (as above, without `@here`), and every unread message from the other person in a DM; capped at 100.
+- Sending a message marks the channel read up to it. `POST /channels/{id}/ack {message_id}` → `204` marks it read up to that message (never moves back). Both send `read_state_update {channel_id, last_read_id, mention_count}` to **all of my own connections** (other tabs and devices), nobody else's.
+- For servers in the rail other than the open one, poll `GET /read-states` (e.g. every 60 s).
+
+**Preferences** (per account on this server): `GET /me/preferences`
+```json
+{ "notify": "all", "channels": { "<channel id>": "mentions" }, "allow_dms": true }
+```
+- `notify`: `all` | `mentions` | `none` for the server; `channels` overrides it per channel. `PATCH /me/preferences` with any of the fields; a channel set to `null` follows `notify` again (`400 fields.notify|channels = invalid|unknown_channel|too_many`, at most 500 channel settings). My other connections get `preferences_update` with the new object.
+- Browser notifications and the sound are client-side: notify for a new message when the tab is hidden (or the channel isn't open), following these levels; DMs notify unless `notify` is `none`.
+
+## 4j. Search: `GET /search`
+Query: `q`, `author_id`, `channel_id`, `from`, `to`, `before`, `limit` (1–50, default 25).
+- `q`: every word must appear (case and accents ignored); `"quoted words"` match as a phrase; the last word matches as a prefix while it's still being typed. No other search syntax: everything is taken as words.
+- `from` / `to`: unix ms, a date `YYYY-MM-DD` (`to` includes that whole day), or RFC 3339.
+- Needs `q` or at least one filter, otherwise `400 fields.q = empty`; bad values `400 fields.<name> = invalid`.
+- Only text channels I can see and my own DMs. → `{ "results": [Message…], "next_before": id | null }`, newest first; pass `next_before` as `before` for the next page.
+- To show a result in context: `GET /channels/{id}/messages?around=MESSAGE_ID&limit=50` returns up to half the page before it and the rest from it on, oldest first.
+
+## 4k. Direct messages
+Between two members of the same server. Not end-to-end encrypted: whoever runs the host can read them in its database (no admin screen shows them). Say so in the DM view.
+- `GET /dms` → my DMs, most recently active first:
+  ```json
+  [ { "id": "…", "type": "dm", "user": { "id": "…", "username": "…", "display_name": "…", "avatar_url": null },
+      "last_message_id": "…" | null, "media_allowed": true, "my_permissions": "…" } ]
+  ```
+- `POST /dms {user_id}` → `201` new or `200` existing, same object. Needs **SEND_DMS**. `400 fields.user_id = self | unknown_user` (also for banned people), `403 dms_closed` if they turned DMs off. Both people get `dm_create` (the object, with `user` = the other person).
+- A DM is a channel: use `/channels/{id}/messages` (GET with `before`/`after`/`around`, POST, PATCH, DELETE), reactions, `/channels/{id}/attachments` (needs ATTACH_FILES) and the `typing` WebSocket op. Its events go **only** to its two people. It never appears in `GET /channels`, the `ready` snapshot or channel events, and channel management can't edit or delete it.
+- Sending needs SEND_DMS: `403 dms_closed` if the other person turned DMs off, `403 dm_unavailable` if they were banned. Only the author can delete a DM message. AI moderation doesn't read DMs.
+- `allow_dms` is in `/me/preferences`.
 
 ## 4h. Server discovery (no central server)
 Hosts that turn discovery on publish their **discoverable** servers and the other hosts they know; every 30 minutes each one fetches the same from the hosts it knows (gossip), so the list spreads from host to host. No server exists only for discovery. A host joins the network by knowing one other host (a seed URL, or a seed list file such as a text file on GitHub), or when another host announces itself to it.

@@ -21,11 +21,15 @@ pub const CREATE_INVITES: u64 = 1 << 11;
 pub const CONNECT_VOICE: u64 = 1 << 12;
 pub const SPEAK: u64 = 1 << 13;
 pub const STREAM: u64 = 1 << 14;
+/// `@everyone`, `@here` and role mentions notify people.
+pub const MENTION_EVERYONE: u64 = 1 << 15;
+/// Open and send direct messages.
+pub const SEND_DMS: u64 = 1 << 16;
 
-pub const ALL: u64 = (1 << 15) - 1;
+pub const ALL: u64 = (1 << 17) - 1;
 
-/// What `@everyone` gets on a new server: VIEW + SEND + ADD_REACTIONS + CONNECT_VOICE + SPEAK = 12547.
-pub const DEFAULT_EVERYONE: u64 = VIEW_CHANNEL | SEND_MESSAGES | ADD_REACTIONS | CONNECT_VOICE | SPEAK;
+/// What `@everyone` gets on a new server: VIEW + SEND + ADD_REACTIONS + CONNECT_VOICE + SPEAK + SEND_DMS = 78083.
+pub const DEFAULT_EVERYONE: u64 = VIEW_CHANNEL | SEND_MESSAGES | ADD_REACTIONS | CONNECT_VOICE | SPEAK | SEND_DMS;
 
 /// Resolves the owner and ADMINISTRATOR into "everything".
 pub fn effective(base: u64, is_owner: bool) -> u64 {
@@ -42,7 +46,8 @@ mod tests {
 
     #[test]
     fn defaults_are_not_admin() {
-        assert_eq!(DEFAULT_EVERYONE, 12547);
+        assert_eq!(DEFAULT_EVERYONE, 78083);
+        assert!(!has(DEFAULT_EVERYONE, MENTION_EVERYONE));
         assert!(!has(DEFAULT_EVERYONE, STREAM));
         assert!(!has(DEFAULT_EVERYONE, MANAGE_CHANNELS));
         assert!(has(effective(DEFAULT_EVERYONE, true), MANAGE_CHANNELS));

@@ -6,13 +6,16 @@ mod auth;
 mod backups;
 mod channels;
 mod discovery;
+mod dms;
 mod error;
 mod extract;
 mod files;
 mod messages;
 pub(crate) mod moderation;
+mod notify;
 mod resources;
 mod roles;
+mod search;
 mod server;
 mod servers;
 mod storage;
@@ -51,6 +54,11 @@ pub fn router(host: Arc<Host>, web_dir: &Path) -> Router {
         .route("/channels", get(server::channels).post(channels::create_channel))
         .route("/channels/{id}", patch(channels::patch_channel).delete(channels::delete_channel))
         .route("/channels/{id}/messages", get(messages::list).post(messages::create))
+        .route("/channels/{id}/ack", post(notify::ack))
+        .route("/read-states", get(notify::read_states))
+        .route("/me/preferences", get(notify::get_preferences).patch(notify::patch_preferences))
+        .route("/dms", get(dms::list).post(dms::open))
+        .route("/search", get(search::search))
         .route("/channels/{id}/messages/{mid}", patch(messages::edit).delete(messages::delete))
         .route("/channels/{id}/messages/{mid}/reactions/{emoji}", put(messages::react).delete(messages::unreact))
         .route("/members", get(server::members))

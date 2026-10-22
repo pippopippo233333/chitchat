@@ -4,13 +4,13 @@ export interface ServerSummary { slug: string; name: string; description: string
 export interface Server extends ServerSummary { id: string; owner_id: string; created_at: string }
 export interface HostInfo { name: string; version: string; servers: ServerSummary[] }
 export interface Category { id: string; name: string; position: number }
-export interface Channel { id: string; type: 'text' | 'voice'; name: string; topic: string; category_id: string | null; position: number; media_allowed: boolean; my_permissions: string; user_limit?: number }
+export interface Channel { id: string; type: 'text' | 'voice' | 'dm'; name: string; topic: string; category_id: string | null; position: number; media_allowed: boolean; my_permissions: string; user_limit?: number }
 export interface VoiceState { user_id: string; channel_id: string; session_id: string; self_mute: boolean; self_deaf: boolean; suppressed: boolean; streaming: boolean }
 export interface Member { user: User; role_ids: string[]; joined_at: string; online: boolean; is_owner: boolean; timed_out_until?: string | null }
 export interface Role { id: string; name: string; color: string; position: number; permissions: string; is_default: boolean }
 export interface Reaction { emoji: string; count: number; me: boolean }
 export interface Attachment { id: string; filename: string; kind: 'image' | 'video' | 'audio' | 'file'; duration_ms?: number | null; voice?: boolean; mime: string; size: number; width: number | null; height: number | null; url: string; thumbnail_url: string | null }
-export interface Message { id: string; channel_id: string; author: User; content: string; created_at: string; edited_at: string | null; reply_to: string | null; reactions: Reaction[]; attachments: Attachment[]; nonce?: string }
+export interface Message { mentions?:string[];mention_roles?:string[];mention_everyone?:boolean;mention_here?:boolean; id: string; channel_id: string; author: User; content: string; created_at: string; edited_at: string | null; reply_to: string | null; reactions: Reaction[]; attachments: Attachment[]; nonce?: string }
 export interface Settings { name: string; description: string; has_password: boolean; invite_only: boolean; registration_open: boolean; listed: boolean; discoverable?: boolean; voice_messages?: boolean; ip_mode: 'off' | 'allowlist'; max_file_mb: number; user_daily_mb: number; user_total_mb: number; server_total_mb: number; media_retention_days: number; storage_used_bytes: number; new_account_restrict_hours: number; max_accounts_per_ip: number; spam_messages_per_5s: number; spam_chars_per_minute: number; spam_max_repeats: number; spam_timeout_minutes: number }
 export interface Invite { code: string; creator_id: string; max_uses: number | null; uses: number; expires_at: string | null; created_at: string }
 export interface InvitePreview { code: string; server: ServerSummary; expires_at: string | null; uses_left: number | null }
@@ -18,7 +18,7 @@ export interface IpRule { id: string; cidr: string; action: 'allow' | 'block'; n
 export interface Ban { id: string; user: User | null; reason: string; ip_banned: boolean; device_banned: boolean; ips?: string[]; created_by: string; created_at: string; expires_at: string | null }
 export interface AuditEntry { id: string; actor_id: string | null; action: string; target_id: string | null; details: Record<string, unknown>; created_at: string }
 export interface StorageUsage { used_today_bytes: number; used_total_bytes: number; max_file_mb: number; user_daily_mb: number; user_total_mb: number; exempt: boolean }
-export interface Snapshot { user: User; is_owner: boolean; permissions: string; server: Server; categories: Category[]; channels: Channel[]; members: Member[]; roles: Role[]; voice_states?: VoiceState[]; ai_moderation?: AiNotice | null }
+export interface Snapshot { user: User; is_owner: boolean; permissions: string; server: Server; categories: Category[]; channels: Channel[]; members: Member[]; roles: Role[]; read_states?:ReadState[];preferences?:NotificationPreferences;dms?:DirectMessage[]; voice_states?: VoiceState[]; ai_moderation?: AiNotice | null }
 export interface AuthResult { token: string; user: User }
 export interface Credentials { username: string; password: string; device_id: string; display_name?: string; server_password?: string; invite_code?: string; setup_code?: string }
 
@@ -93,3 +93,9 @@ export interface AiSettings { config: AiConfig; status: { queued: number; checke
 export interface AiVerdict { flagged: boolean; categories: string[]; scores: Record<string, number> | null; provider: string; reason: string; unconfirmed: boolean }
 export interface AiTest { verdict: AiVerdict; action: string; ms: number; error: string | null }
 export interface AiFlag { id: string; message_id: string | null; channel_id: string; author: User | null; author_id: string; content: string; categories: string[]; scores: Record<string, number> | null; provider: string; reason: string; action: 'flagged' | 'hidden' | 'timed_out'; status: 'open' | 'dismissed' | 'deleted' | 'resolved'; created_at: string; resolved_by: string | null; resolved_at: string | null }
+
+export interface DirectMessage {id:string;type:'dm';user:User;last_message_id:string|null;my_permissions?:string;media_allowed?:boolean}
+export interface ReadState {channel_id:string;last_read_id:string|null;last_message_id:string|null;mention_count:number}
+export type NotifyMode='all'|'mentions'|'none';
+export interface NotificationPreferences {notify:NotifyMode;channels:Record<string,NotifyMode>;allow_dms:boolean}
+export interface SearchPage {results:Message[];next_before:string|null}

@@ -20,6 +20,11 @@ pub fn next_id() -> i64 {
     }
 }
 
+/// The smallest ID made at `ms` (unix milliseconds): everything newer compares greater.
+pub fn at_ms(ms: i64) -> i64 {
+    ((ms.max(0) as u64).saturating_sub(EPOCH_MS) << 22) as i64
+}
+
 /// Parses an ID sent by a client as a decimal string.
 pub fn parse(s: &str) -> Option<i64> {
     s.parse::<i64>().ok().filter(|v| *v > 0)

@@ -2,6 +2,7 @@
   import { Api, can } from './lib/api';
   import type { Snapshot, Member } from './lib/api';
   import { canManageRole, canModerate } from './lib/permissions';
+  export let onDirect:((id:string)=>void)|undefined=undefined;
   export let api: Api;
   export let snapshot: Snapshot;
   export let member: Member;
@@ -39,6 +40,7 @@
 <h2 id="dialog-title">{member.user.display_name}</h2><p class="muted small">@{member.user.username} · {member.is_owner ? 'Server owner' : member.online ? 'Online' : 'Offline'}</p>
 {#if member.timed_out_until && Date.parse(member.timed_out_until) > Date.now()}<div class="notice">Timed out until {new Date(member.timed_out_until).toLocaleString()}</div>{/if}
 {#if error}<div class="error" role="alert">{error}</div>{/if}{#if success}<div class="notice" role="status">{success}</div>{/if}
+{#if onDirect&&member.user.id!==snapshot.user.id}<button class="primary" disabled={busy||!can(snapshot.permissions,16,snapshot.is_owner)} onclick={()=>onDirect?.(member.user.id)}>Send direct message</button>{/if}
 <h3 class="section-heading">Roles</h3>
 {#each roles as role}<label class="check-label"><input type="checkbox" checked={role.is_default || member.role_ids.includes(role.id)} disabled={busy || role.is_default || member.is_owner || !canManageRole(snapshot, role)} onchange={event => assign(role.id, event.currentTarget.checked)}/><span class="role-dot" style:background={role.color || '#8c9ca5'}></span>{role.name}</label>{/each}
 {#if canKick || canBan}<h3 class="section-heading">Moderation</h3><div class="button-row">{#if canKick}<button class="secondary" disabled={busy} onclick={() => action = 'timeout'}>Timeout</button><button class="secondary" disabled={busy} onclick={() => action = 'clear'}>Clear timeout</button><button class="secondary danger" disabled={busy} onclick={() => action = 'kick'}>Kick</button>{/if}{#if canBan}<button class="secondary danger" disabled={busy} onclick={() => action = 'ban'}>Ban</button>{/if}</div>{/if}

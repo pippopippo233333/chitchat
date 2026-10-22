@@ -34,3 +34,11 @@ Microphone recording and screen sharing require HTTPS or localhost. Audio captur
 - `src/`: reusable chat, media, moderation and administration components.
 
 The client talks to the host API described in [the API contract](../docs/api.md).
+
+## Search, mentions and notifications
+
+Use Search messages in the sidebar or header to search the current community, including your own direct messages. Filter by author, conversation or dates, and jump to the original message. Type `@` for member/role suggestions or `#` for a channel link; mass and role pings require the owner-controlled mention permission.
+
+Direct messages stay inside one community and can be opened from a member profile or the Direct messages section. They are not end-to-end encrypted: the host operator can read stored messages. Members can turn off incoming DMs in Notifications.
+
+Notifications includes account-wide and per-channel preferences, browser opt-in, and device sound/volume controls. Unread badges are shared across signed-in devices; other saved communities refresh about once a minute. Browser notifications use a notification-only service worker where supported. Keep the page running to receive alerts; closed or suspended pages do not receive Web Push in this build.

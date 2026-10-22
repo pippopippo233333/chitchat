@@ -1,6 +1,6 @@
 import type { Member, Role, Snapshot } from './api';
 import { can } from './api';
-export const permissionNames = ['View channels', 'Send messages', 'Manage messages', 'Manage channels', 'Manage roles', 'Kick / timeout members', 'Ban members', 'Attach files', 'Add reactions', 'Administrator', 'Manage server', 'Create invites', 'Connect to voice', 'Speak in voice', 'Share screen'];
+export const permissionNames = ['View channels', 'Send messages', 'Manage messages', 'Manage channels', 'Manage roles', 'Kick / timeout members', 'Ban members', 'Attach files', 'Add reactions', 'Administrator', 'Manage server', 'Create invites', 'Connect to voice', 'Speak in voice', 'Share screen', 'Notify everyone, here and roles', 'Send direct messages'];
 export function highestRole(member: Member | undefined, roles: Role[]) { return Math.max(0, ...roles.filter(role => role.is_default || member?.role_ids.includes(role.id)).map(role => role.position)); }
 export function canManageRole(snapshot: Snapshot, role: Role) {
   return can(snapshot.permissions, 4, snapshot.is_owner) && (snapshot.is_owner || role.position < highestRole(snapshot.members.find(member => member.user.id === snapshot.user.id), snapshot.roles));

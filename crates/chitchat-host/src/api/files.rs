@@ -22,7 +22,7 @@ use crate::host::ServerCtx;
 use crate::ids::next_id;
 use crate::media::{self, MediaError, Sniffed};
 use crate::models::{AttachmentOut, AttachmentRow, now_ms};
-use crate::perms::{ATTACH_FILES, VIEW_CHANNEL};
+use crate::perms::ATTACH_FILES;
 
 const MB: i64 = 1024 * 1024;
 const DAY_MS: i64 = 86_400_000;
@@ -91,9 +91,11 @@ pub async fn upload(auth: Auth, Path(p): Path<ChanPath>, Query(q): Query<UploadQ
 }
 
 async fn receive(auth: &Auth, p: &ChanPath, q: &UploadQuery, stream: &mut BodyDataStream, declared: Option<i64>) -> ApiResult<(StatusCode, Json<AttachmentOut>)> {
-    auth.require(VIEW_CHANNEL)?;
-    let channel_id = parse_id(&p.id, "unknown_channel")?;
-    let ch = db::channel_row(&auth.srv.db, channel_id).await?.filter(|c| c.kind == "text").ok_or_else(|| ApiError::not_found("unknown_channel", "No such text channel."))?;
+    // A text channel or one of the caller's direct messages (always open to files).
+    let ch = super::messages::text_channel(auth, &p.id).await?;
+    if ch.kind == "dm" {
+        auth.require(crate::perms::SEND_DMS)?;
+    }
     if !ch.media_allowed {
         return Err(ApiError::forbidden("media_not_allowed", "Images and videos aren't allowed in this channel."));
     }
@@ -373,7 +375,7 @@ pub async fn cleanup(srv: &ServerCtx) -> anyhow::Result<()> {
         for (mid, cid) in expired {
             if let Some(row) = db::message_row(&srv.db, cid, mid).await? {
                 let out = db::messages_out(srv, &[row], 0).await?.remove(0);
-                srv.emit(crate::events::Event::new("message_update", out).in_channel(cid));
+                super::messages::emit_in(srv, crate::events::Event::new("message_update", out), cid).await?;
             }
         }
     }

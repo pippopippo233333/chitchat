@@ -98,7 +98,7 @@ async fn prune(srv: &ServerCtx, target: i64) -> ApiResult<i64> {
             let files: Vec<(String, Option<String>)> = sqlx::query_as("SELECT blob_hash, thumb_hash FROM attachments WHERE message_id = ?").bind(id).fetch_all(&srv.db).await?;
             let hashes: Vec<String> = files.into_iter().flat_map(|(b, t)| std::iter::once(b).chain(t)).collect();
             sqlx::query("DELETE FROM messages WHERE id = ?").bind(id).execute(&srv.db).await?;
-            srv.emit(Event::new("message_delete", json!({ "id": id.to_string(), "channel_id": channel_id.to_string() })).in_channel(channel_id));
+            super::messages::emit_in(srv, Event::new("message_delete", json!({ "id": id.to_string(), "channel_id": channel_id.to_string() })), channel_id).await?;
             deleted += 1;
             used -= text_bytes + super::files::remove_blobs_if_unused(srv, &hashes).await?;
             if used <= target {

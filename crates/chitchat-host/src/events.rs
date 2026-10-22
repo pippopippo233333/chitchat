@@ -11,6 +11,9 @@ pub struct Event {
     pub refresh_perms: bool,
     /// Only connections with these permissions receive it (0 = everyone).
     pub needs: u64,
+    /// When set, only these users' connections receive it (direct messages, a user's own read
+    /// state), whatever their permissions.
+    pub users: Option<Vec<i64>>,
     pub kind: EventKind,
 }
 
@@ -41,11 +44,11 @@ pub fn frame(ty: &str, data: impl Serialize) -> String {
 
 impl Event {
     pub fn new(ty: &str, data: impl Serialize) -> Event {
-        Event { channel_id: None, refresh_perms: false, needs: 0, kind: EventKind::Frame(frame(ty, data)) }
+        Event { channel_id: None, refresh_perms: false, needs: 0, users: None, kind: EventKind::Frame(frame(ty, data)) }
     }
 
     pub fn channel(ty: &'static str, channel: ChannelOut, channel_id: i64) -> Event {
-        Event { channel_id: Some(channel_id), refresh_perms: false, needs: 0, kind: EventKind::Channel { ty, channel } }
+        Event { channel_id: Some(channel_id), refresh_perms: false, needs: 0, users: None, kind: EventKind::Channel { ty, channel } }
     }
 
     pub fn in_channel(mut self, channel_id: i64) -> Event {
@@ -54,11 +57,16 @@ impl Event {
     }
 
     pub fn close(target: CloseTarget) -> Event {
-        Event { channel_id: None, refresh_perms: false, needs: 0, kind: EventKind::Close(target) }
+        Event { channel_id: None, refresh_perms: false, needs: 0, users: None, kind: EventKind::Close(target) }
     }
 
     pub fn ip_recheck() -> Event {
-        Event { channel_id: None, refresh_perms: false, needs: 0, kind: EventKind::IpRecheck }
+        Event { channel_id: None, refresh_perms: false, needs: 0, users: None, kind: EventKind::IpRecheck }
+    }
+
+    pub fn for_users(mut self, users: Vec<i64>) -> Event {
+        self.users = Some(users);
+        self
     }
 
     pub fn needs(mut self, perms: u64) -> Event {

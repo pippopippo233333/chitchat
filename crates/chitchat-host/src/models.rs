@@ -126,6 +126,16 @@ pub struct ChannelRow {
     pub media_allowed: bool,
     /// Voice channels: most people in the room at once.
     pub user_limit: i64,
+    /// Direct messages: the two people (dm_a < dm_b).
+    pub dm_a: Option<i64>,
+    pub dm_b: Option<i64>,
+}
+
+impl ChannelRow {
+    /// The two people in a direct message (empty for other channels).
+    pub fn dm_members(&self) -> Vec<i64> {
+        self.dm_a.into_iter().chain(self.dm_b).collect()
+    }
 }
 
 #[derive(sqlx::FromRow, Clone)]
@@ -136,6 +146,8 @@ pub struct MessageRow {
     pub created_at: i64,
     pub edited_at: Option<i64>,
     pub reply_to: Option<i64>,
+    /// 0 = none, 1 = @everyone, 2 = @here.
+    pub mention_everyone: i64,
     pub author_id: i64,
     pub username: String,
     pub display_name: String,
@@ -310,6 +322,12 @@ pub struct MessageOut {
     pub reply_to: Option<String>,
     pub reactions: Vec<ReactionOut>,
     pub attachments: Vec<AttachmentOut>,
+    /// People pinged by `<@id>`, roles by `<@&id>`; `@everyone`/`@here` only count when the
+    /// author may ping everyone.
+    pub mentions: Vec<String>,
+    pub mention_roles: Vec<String>,
+    pub mention_everyone: bool,
+    pub mention_here: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nonce: Option<String>,
 }
@@ -326,6 +344,10 @@ impl MessageOut {
             reply_to: m.reply_to.map(|v| v.to_string()),
             reactions,
             attachments: Vec::new(),
+            mentions: Vec::new(),
+            mention_roles: Vec::new(),
+            mention_everyone: m.mention_everyone == 1,
+            mention_here: m.mention_everyone == 2,
             nonce: None,
         }
     }

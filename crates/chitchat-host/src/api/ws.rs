@@ -136,8 +136,11 @@ async fn run(mut socket: WebSocket, srv: Arc<ServerCtx>, ip: IpAddr, host: Optio
                                 break;
                             }
                     }
-                    if ev.channel_id.is_some() && !perms::has(auth.perms, VIEW_CHANNEL) {
-                        continue;
+                    match &ev.users {
+                        Some(users) if !users.contains(&user_id) => continue,
+                        Some(_) => {}
+                        None if ev.channel_id.is_some() && !perms::has(auth.perms, VIEW_CHANNEL) => continue,
+                        None => {}
                     }
                     if ev.needs != 0 && !perms::has(auth.perms, ev.needs) {
                         continue;
@@ -214,15 +217,18 @@ async fn run(mut socket: WebSocket, srv: Arc<ServerCtx>, ip: IpAddr, host: Optio
 
 async fn typing(srv: &ServerCtx, auth: &Auth, data: &Value, last: &mut HashMap<i64, Instant>) {
     let Some(cid) = data.get("channel_id").and_then(Value::as_str).and_then(crate::ids::parse) else { return };
-    if !perms::has(auth.perms, VIEW_CHANNEL | SEND_MESSAGES) {
-        return;
-    }
     if last.get(&cid).is_some_and(|t| t.elapsed() < TYPING_EVERY) {
         return;
     }
-    if !matches!(db::channel_row(&srv.db, cid).await, Ok(Some(c)) if c.kind == "text") {
+    let Ok(Some(ch)) = db::any_channel_row(&srv.db, cid).await else { return };
+    let allowed = match ch.kind.as_str() {
+        "text" => perms::has(auth.perms, VIEW_CHANNEL | SEND_MESSAGES),
+        "dm" => ch.dm_members().contains(&auth.user.id) && perms::has(auth.perms, perms::SEND_DMS),
+        _ => false,
+    };
+    if !allowed {
         return;
     }
     last.insert(cid, Instant::now());
-    srv.emit(Event::new("typing_start", json!({ "channel_id": cid.to_string(), "user_id": auth.user.id.to_string() })).in_channel(cid));
+    srv.emit(super::messages::scoped(Event::new("typing_start", json!({ "channel_id": cid.to_string(), "user_id": auth.user.id.to_string() })), &ch));
 }

@@ -162,7 +162,8 @@ pub async fn create_channel(auth: Auth, Body(req): Body<CreateChannelReq>) -> Ap
         Some(p) => p,
         None => sqlx::query_scalar("SELECT COALESCE(MAX(position) + 1, 0) FROM channels WHERE category_id IS ?").bind(category_id).fetch_one(&auth.srv.db).await?,
     };
-    let row = ChannelRow { id: next_id(), kind: req.kind, name, topic: req.topic.trim().to_string(), category_id, position, media_allowed: false, user_limit };
+    let row =
+        ChannelRow { id: next_id(), kind: req.kind, name, topic: req.topic.trim().to_string(), category_id, position, media_allowed: false, user_limit, dm_a: None, dm_b: None };
     sqlx::query("INSERT INTO channels (id, type, name, topic, category_id, position, media_allowed, user_limit) VALUES (?, ?, ?, ?, ?, ?, 0, ?)")
         .bind(row.id)
         .bind(&row.kind)
@@ -242,7 +243,7 @@ pub async fn patch_channel(auth: Auth, Path(p): Path<IdPath>, Body(req): Body<Pa
 pub async fn delete_channel(auth: Auth, Path(p): Path<IdPath>) -> ApiResult<StatusCode> {
     auth.require(MANAGE_CHANNELS)?;
     let id = parse_id(&p.id, "unknown_channel")?;
-    let deleted = sqlx::query("DELETE FROM channels WHERE id = ?").bind(id).execute(&auth.srv.db).await?;
+    let deleted = sqlx::query("DELETE FROM channels WHERE id = ? AND type != 'dm'").bind(id).execute(&auth.srv.db).await?;
     if deleted.rows_affected() == 0 {
         return Err(ApiError::not_found("unknown_channel", "No such channel."));
     }
