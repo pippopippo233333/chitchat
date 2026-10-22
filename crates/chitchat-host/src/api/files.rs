@@ -154,7 +154,7 @@ async fn receive(auth: &Auth, p: &ChanPath, q: &UploadQuery, stream: &mut BodyDa
             media::Processed { bytes, mime, kind: "file", width: None, height: None, thumb: None, duration_ms: None }
         }
         Some(kind @ (Sniffed::Mp4 | Sniffed::Webm)) => media::process_av(bytes, kind, &tmp, q.voice).await.map_err(|_| broken_audio())?,
-        Some(kind) if media::is_audio(kind) => media::process_audio(bytes, kind, &tmp).await.map_err(|_| broken_audio())?,
+        Some(kind) if media::is_audio(kind) => media::process_audio(bytes, kind, &tmp, q.voice).await.map_err(|_| broken_audio())?,
         Some(kind) => tokio::task::spawn_blocking(move || media::process_image(bytes, kind)).await.map_err(|_| ApiError::internal())?.map_err(|e| match e {
             MediaError::Broken => ApiError::bad_request("That image couldn't be read. It may be damaged."),
             MediaError::Unsupported => ApiError::new(StatusCode::UNSUPPORTED_MEDIA_TYPE, "unsupported_media", "Unsupported file."),

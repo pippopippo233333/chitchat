@@ -249,7 +249,7 @@ pub async fn process_av(bytes: Vec<u8>, kind: Sniffed, tmp_dir: &Path, audio_hin
     let (types, _) = probe(ffprobe, &input).await;
     let _ = tokio::fs::remove_file(&input).await;
     if !types.iter().any(|t| t == "video") && types.iter().any(|t| t == "audio") {
-        process_audio(bytes, kind, tmp_dir).await
+        process_audio(bytes, kind, tmp_dir, audio_hint).await
     } else {
         Ok(process_video(bytes, kind, tmp_dir).await)
     }
@@ -261,7 +261,11 @@ fn stored_as_audio(bytes: Vec<u8>, kind: Sniffed) -> Processed {
 
 /// Keeps only the sound (no tags, no cover picture, no hidden metadata) without re-encoding it.
 /// With ffmpeg, a file it can't read is refused; without it, audio is stored as uploaded.
-pub async fn process_audio(bytes: Vec<u8>, kind: Sniffed, tmp_dir: &Path) -> Result<Processed, MediaError> {
+///
+/// Voice messages are re-encoded with timestamps counted from the samples: browsers sometimes
+/// record them starting minutes in (e.g. while the mic is also in a voice call), which made a
+/// 2-second message claim to last 4 minutes.
+pub async fn process_audio(bytes: Vec<u8>, kind: Sniffed, tmp_dir: &Path, voice: bool) -> Result<Processed, MediaError> {
     let Some((ffmpeg, ffprobe)) = ffmpeg() else { return Ok(stored_as_audio(bytes, kind)) };
     let (mime, ext) = audio_format(kind);
     let id = crate::ids::next_id();
@@ -271,7 +275,12 @@ pub async fn process_audio(bytes: Vec<u8>, kind: Sniffed, tmp_dir: &Path) -> Res
         return Ok(stored_as_audio(bytes, kind));
     }
     let mut remux = tokio::process::Command::new(ffmpeg);
-    remux.args(["-y", "-loglevel", "error", "-i"]).arg(&input).args(["-map", "0:a:0", "-map_metadata", "-1", "-c", "copy"]);
+    remux.args(["-y", "-loglevel", "error", "-i"]).arg(&input).args(["-map", "0:a:0", "-map_metadata", "-1"]);
+    match (voice, ext) {
+        (true, "m4a") => remux.args(["-af", "asetpts=N/SR/TB", "-c:a", "aac", "-b:a", "64k"]),
+        (true, "webm" | "ogg") => remux.args(["-af", "asetpts=N/SR/TB", "-c:a", "libopus", "-b:a", "48k"]),
+        _ => remux.args(["-c", "copy"]),
+    };
     if ext == "m4a" {
         remux.args(["-movflags", "+faststart"]);
     }
