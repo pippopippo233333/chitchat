@@ -6,13 +6,18 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::sync::Mutex;
+use std::time::Duration;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::webview::NewWindowResponse;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as _};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
+use tauri_plugin_updater::UpdaterExt;
 use url::Url;
 
 /// Started with the computer: stay in the tray until opened.
@@ -38,6 +43,80 @@ fn show(app: &AppHandle) {
     }
 }
 
+/// How often the app, which may run for weeks in the tray, looks for a new version.
+const UPDATE_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// The version the person said "Later" to: not asked again until they check by hand.
+struct Postponed(Mutex<Option<String>>);
+
+/// Asks GitHub Releases for a newer signed version (`plugins.updater` in tauri.conf.json) and
+/// offers to install it. `by_hand`: from the tray menu, so also say when there's nothing new.
+async fn check_for_update(app: AppHandle, by_hand: bool) {
+    let say = |text: String| {
+        let app = app.clone();
+        async move {
+            let _ = tauri::async_runtime::spawn_blocking(move || app.dialog().message(text).title("ChitChat updates").blocking_show()).await;
+        }
+    };
+    let found = match app.updater() {
+        Ok(updater) => updater.check().await,
+        Err(e) => Err(e),
+    };
+    let update = match found {
+        Ok(Some(update)) => update,
+        Ok(None) => {
+            if by_hand {
+                say(format!("You have the latest version of ChitChat ({}).", app.package_info().version)).await;
+            }
+            return;
+        }
+        Err(e) => {
+            if by_hand {
+                say(format!("Couldn't check for updates: {e}")).await;
+            }
+            return;
+        }
+    };
+    let postponed = app.state::<Postponed>();
+    if !by_hand && postponed.0.lock().unwrap().as_deref() == Some(update.version.as_str()) {
+        return;
+    }
+    let notes = update
+        .body
+        .clone()
+        .filter(|b| !b.trim().is_empty())
+        .map(|b| {
+            format!(
+                "
+
+What's new:
+{b}"
+            )
+        })
+        .unwrap_or_default();
+    let text = format!(
+        "ChitChat {} is available (you have {}).{notes}
+
+Updating restarts ChitChat.",
+        update.version, update.current_version
+    );
+    let ask = app.clone();
+    let yes = tauri::async_runtime::spawn_blocking(move || {
+        ask.dialog().message(text).title("Update ChitChat").buttons(MessageDialogButtons::OkCancelCustom("Update now".into(), "Later".into())).blocking_show()
+    })
+    .await
+    .unwrap_or(false);
+    if !yes {
+        *postponed.0.lock().unwrap() = Some(update.version.clone());
+        return;
+    }
+    // The download is checked against the public key in tauri.conf.json before anything runs.
+    match update.download_and_install(|_, _| {}, || {}).await {
+        Ok(()) => app.restart(),
+        Err(e) => say(format!("The update couldn't be installed: {e}")).await,
+    }
+}
+
 /// From the client: a system notification about a new message.
 #[tauri::command]
 fn notify(app: AppHandle, title: String, body: String) -> Result<(), String> {
@@ -50,6 +129,9 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show(app)))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(Postponed(Mutex::new(None)))
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec![HIDDEN_ARG])))
         .invoke_handler(tauri::generate_handler![notify])
         .setup(|app| {
@@ -87,8 +169,9 @@ fn main() {
             let open = MenuItem::with_id(app, "open", "Open ChitChat", true, None::<&str>)?;
             let autostart = app.autolaunch().is_enabled().unwrap_or(false);
             let startup = CheckMenuItem::with_id(app, "autostart", "Start when the computer starts", true, autostart, None::<&str>)?;
+            let updates = MenuItem::with_id(app, "updates", "Check for updates", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit ChitChat", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &startup, &PredefinedMenuItem::separator(app)?, &quit])?;
+            let menu = Menu::with_items(app, &[&open, &startup, &updates, &PredefinedMenuItem::separator(app)?, &quit])?;
             let check = startup.clone();
             TrayIconBuilder::with_id("tray")
                 .icon(app.default_window_icon().cloned().expect("app icon"))
@@ -103,6 +186,9 @@ fn main() {
                         let _ = if on { launcher.enable() } else { launcher.disable() };
                         let _ = check.set_checked(launcher.is_enabled().unwrap_or(on));
                     }
+                    "updates" => {
+                        tauri::async_runtime::spawn(check_for_update(app.clone(), true));
+                    }
                     "quit" => app.exit(0),
                     _ => {}
                 })
@@ -112,6 +198,15 @@ fn main() {
                     }
                 })
                 .build(app)?;
+
+            let updater = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(15)).await;
+                loop {
+                    check_for_update(updater.clone(), false).await;
+                    tokio::time::sleep(UPDATE_EVERY).await;
+                }
+            });
             Ok(())
         })
         .run(tauri::generate_context!())
