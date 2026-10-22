@@ -631,6 +631,19 @@ Between two members of the same server. Not end-to-end encrypted: whoever runs t
 - Sending needs SEND_DMS: `403 dms_closed` if the other person turned DMs off, `403 dm_unavailable` if they were banned. Only the author can delete a DM message. AI moderation doesn't read DMs.
 - `allow_dms` is in `/me/preferences`.
 
+## 4l. Push notifications (Web Push)
+For notifications while ChitChat is closed (phones especially). Standard Web Push (RFC 8030/8291/8292): the browser's push service delivers an encrypted payload it can't read; there is no central ChitChat server. One VAPID key per host, created at first start in `data/push-vapid.key` (keep it with backups: a new key invalidates every subscription).
+- `GET /push/key` → `{ "public_key": "<base64url, 65-byte P-256 point>" }` (the `applicationServerKey`).
+- `PUT /push/subscription` with `PushSubscription.toJSON()`: `{ "endpoint": "https://…", "keys": { "p256dh": "…", "auth": "…" } }` → `204`. `400 fields.endpoint = unsupported` unless the endpoint is a known push service (Google FCM, Mozilla, Apple, Microsoft), `400 fields.keys = invalid`. Tied to the caller's session: logging out, kick or ban removes it. Re-PUT any time (idempotent; the newest owner of an endpoint wins). At most 10 per user, oldest dropped.
+- `DELETE /push/subscription {endpoint}` → `204` (only your own).
+- When a message is sent, each subscribed person who would be notified (same rules as 4i: DM, or `all`/`mentions` with a direct, role or @everyone ping; never their own message; @here never pushes) gets a push **unless one of their WebSocket connections reports it is on screen** (`visibility` op, section 5). Payload (JSON, encrypted):
+  ```json
+  { "title": "Ann · #general · Dev", "body": "Ann's text, mentions as @names, ≤180 chars", "slug": "dev",
+    "channel_id": "…", "message_id": "…", "tag": "dev:…" }
+  ```
+  DMs are titled with the sender's name. Expired subscriptions (`404`/`410` from the push service) are deleted.
+- A page's service worker can only subscribe for its own site, so the web client registers push only with communities on the same host as the page.
+
 ## 4h. Server discovery (no central server)
 Hosts that turn discovery on publish their **discoverable** servers and the other hosts they know; every 30 minutes each one fetches the same from the hosts it knows (gossip), so the list spreads from host to host. No server exists only for discovery. A host joins the network by knowing one other host (a seed URL, or a seed list file such as a text file on GitHub), or when another host announces itself to it.
 
@@ -687,6 +700,7 @@ All frames are JSON text: `{ "type": "…", "data": { … } }`.
 |---|---|
 | `identify` | `{ token }` |
 | `typing` | `{ channel_id }` (send at most once every 5 s while typing) |
+| `visibility` | `{ visible }`: whether this page is on screen. Connections start as visible; while any is, the server sends you no Web Push (4l). |
 | `voice_join` · `voice_sdp` · `voice_state` · `voice_speaking` · `voice_leave` | see section 4e |
 
 **Server → client events** (sent only to members who can see the channel concerned)

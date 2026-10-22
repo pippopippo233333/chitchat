@@ -95,6 +95,9 @@ async fn run(mut socket: WebSocket, srv: Arc<ServerCtx>, ip: IpAddr, host: Optio
     if srv.connect(user_id) {
         srv.emit(Event::new("presence_update", json!({ "user_id": user_id.to_string(), "online": true })));
     }
+    // A new connection counts as on screen until the page says otherwise (`visibility`).
+    let mut visible = true;
+    srv.set_watching(user_id, true);
 
     let mut ping = tokio::time::interval(PING_EVERY);
     ping.tick().await;
@@ -109,6 +112,13 @@ async fn run(mut socket: WebSocket, srv: Arc<ServerCtx>, ip: IpAddr, host: Optio
                     if let Ok(f) = serde_json::from_str::<ClientFrame>(&text) {
                         if f.ty == "typing" {
                             typing(&srv, &auth, &f.data, &mut last_typing).await;
+                        } else if f.ty == "visibility" {
+                            if let Some(v) = f.data.get("visible").and_then(Value::as_bool)
+                                && v != visible
+                            {
+                                visible = v;
+                                srv.set_watching(user_id, v);
+                            }
                         } else if f.ty.starts_with("voice_")
                             && let Err(e) = voice_api::handle(&srv, &auth, &mut vc, &f.ty, &f.data).await
                                 && !send_voice_end(&mut socket, e).await {
@@ -210,6 +220,9 @@ async fn run(mut socket: WebSocket, srv: Arc<ServerCtx>, ip: IpAddr, host: Optio
     }
 
     voice_api::leave(&srv, user_id, vc.session);
+    if visible {
+        srv.set_watching(user_id, false);
+    }
     if srv.disconnect(user_id) {
         srv.emit(Event::new("presence_update", json!({ "user_id": user_id.to_string(), "online": false })));
     }

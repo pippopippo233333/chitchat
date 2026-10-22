@@ -244,6 +244,21 @@ END;
 INSERT INTO messages_fts (messages_fts) VALUES ('rebuild');
 "#;
 
+/// Web Push subscriptions: one per browser, tied to the login it was made with (logging out,
+/// a kick or a ban removes it).
+const SCHEMA_V11: &str = r#"
+CREATE TABLE push_subscriptions (
+    endpoint TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL REFERENCES sessions(token_hash) ON DELETE CASCADE,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX push_subscriptions_user ON push_subscriptions(user_id);
+CREATE INDEX push_subscriptions_session ON push_subscriptions(token_hash);
+"#;
+
 /// Shown in the network-wide server browser (discovery.rs), opt-in.
 const SCHEMA_V8: &str = r#"
 ALTER TABLE server ADD COLUMN discoverable INTEGER NOT NULL DEFAULT 0;
@@ -352,6 +367,12 @@ async fn migrate(pool: &SqlitePool) -> Result<()> {
         let mut tx = pool.begin().await?;
         sqlx::raw_sql(SCHEMA_V10).execute(&mut *tx).await?;
         sqlx::raw_sql("PRAGMA user_version = 10").execute(&mut *tx).await?;
+        tx.commit().await?;
+    }
+    if version < 11 {
+        let mut tx = pool.begin().await?;
+        sqlx::raw_sql(SCHEMA_V11).execute(&mut *tx).await?;
+        sqlx::raw_sql("PRAGMA user_version = 11").execute(&mut *tx).await?;
         tx.commit().await?;
     }
     Ok(())

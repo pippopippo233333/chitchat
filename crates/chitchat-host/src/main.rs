@@ -11,6 +11,7 @@ mod ipfilter;
 mod media;
 mod models;
 mod perms;
+mod push;
 mod spam;
 mod tls;
 mod voice;
@@ -199,6 +200,7 @@ async fn run(host: std::sync::Arc<Host>, args: RunArgs) -> Result<()> {
         api::start_resources(&host.data_dir, slug);
     }
     discovery::start(host.clone());
+    push::init(&host.data_dir, args.canonical_url.as_deref()).context("setting up web push")?;
     let data_dir = host.data_dir.clone();
     let mut app = api::router(host, &args.web_dir);
     if let Some(url) = &args.canonical_url {

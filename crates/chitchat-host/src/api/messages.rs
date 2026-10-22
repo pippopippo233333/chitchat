@@ -296,6 +296,7 @@ pub async fn create(auth: Auth, Path(p): Path<ChanPath>, Body(req): Body<SendReq
     let mut out = db::messages_out(&auth.srv, std::slice::from_ref(&row), 0).await?.remove(0);
     out.nonce = req.nonce;
     auth.srv.emit(scoped(Event::new("message_create", &out), &ch));
+    super::push::message_created(auth.srv.clone(), ch.clone(), out.clone());
     if ch.kind != "dm" {
         crate::ai::submit(&auth.srv, crate::ai::Job { message_id: id, channel_id: ch.id, author_id: auth.user.id, content: content.clone() }, auth.is_owner);
     }

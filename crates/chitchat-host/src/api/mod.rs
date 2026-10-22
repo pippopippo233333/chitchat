@@ -13,6 +13,7 @@ mod files;
 mod messages;
 pub(crate) mod moderation;
 mod notify;
+mod push;
 mod resources;
 mod roles;
 mod search;
@@ -59,6 +60,8 @@ pub fn router(host: Arc<Host>, web_dir: &Path) -> Router {
         .route("/me/preferences", get(notify::get_preferences).patch(notify::patch_preferences))
         .route("/dms", get(dms::list).post(dms::open))
         .route("/search", get(search::search))
+        .route("/push/key", get(push::key))
+        .route("/push/subscription", put(push::subscribe).delete(push::unsubscribe))
         .route("/channels/{id}/messages/{mid}", patch(messages::edit).delete(messages::delete))
         .route("/channels/{id}/messages/{mid}/reactions/{emoji}", put(messages::react).delete(messages::unreact))
         .route("/members", get(server::members))

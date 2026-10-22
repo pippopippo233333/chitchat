@@ -11,7 +11,7 @@ export class LiveConnection {
   private lastTyping = 0;
   private lastError = '';
   private handshake?: ReturnType<typeof setTimeout>;
-  constructor(private api: Api, private onEvent: (event: Envelope) => void, private onStatus: (status: ConnectionStatus) => void, private onFatal: (message: string) => void) {}
+  constructor(private api: Api, private onEvent: (event: Envelope) => void, private onStatus: (status: ConnectionStatus) => void, private onFatal: (message: string) => void) { if (typeof document !== 'undefined') document.addEventListener('visibilitychange', this.visibility); }
   connect() {
     if (this.stopped) return;
     this.onStatus(this.attempt ? 'reconnecting' : 'connecting');
@@ -25,7 +25,7 @@ export class LiveConnection {
       try { frame = JSON.parse(event.data); } catch { return; }
       if (!frame || typeof frame.type !== 'string' || !frame.data) return;
       if (frame.type === 'error') this.lastError = frame.data.message ?? '';
-      if (frame.type === 'ready') { clearTimeout(this.handshake); this.attempt = 0; this.lastError = ''; this.onStatus('connected'); }
+      if (frame.type === 'ready') { clearTimeout(this.handshake); this.attempt = 0; this.lastError = ''; this.onStatus('connected'); this.visibility(); }
       this.onEvent(frame);
     };
     socket.onclose = event => {
@@ -52,5 +52,7 @@ export class LiveConnection {
     if (this.stopped || this.socket?.readyState !== WebSocket.OPEN) return false;
     this.socket.send(JSON.stringify({ type, data })); return true;
   }
-  stop() { this.stopped = true; clearTimeout(this.timer); clearTimeout(this.handshake); this.socket?.close(); }
+  // Tells the server whether this page is on screen: it sends Web Push only while none of yours is.
+  private visibility = () => { if (typeof document !== 'undefined') this.send('visibility', { visible: document.visibilityState === 'visible' }); };
+  stop() { if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', this.visibility); this.stopped = true; clearTimeout(this.timer); clearTimeout(this.handshake); this.socket?.close(); }
 }

@@ -68,6 +68,8 @@ pub struct ServerCtx {
     pub events: broadcast::Sender<Arc<Event>>,
     /// Open WebSocket connections per user.
     presence: Mutex<HashMap<i64, usize>>,
+    /// Of those, the ones whose page is on screen: no push notifications while there are any.
+    watching: Mutex<HashMap<i64, usize>>,
     pub spam: Mutex<SpamGuard>,
     /// The owner's IP rules, checked on every request.
     pub ip: std::sync::RwLock<IpFilter>,
@@ -106,6 +108,7 @@ impl ServerCtx {
             db,
             events: broadcast::channel(1024).0,
             presence: Mutex::new(HashMap::new()),
+            watching: Mutex::new(HashMap::new()),
             spam: Mutex::new(SpamGuard::default()),
             ip: std::sync::RwLock::new(ip),
             voice: Mutex::new(HashMap::new()),
@@ -177,6 +180,25 @@ impl ServerCtx {
 
     pub fn is_online(&self, user_id: i64) -> bool {
         self.presence.lock().unwrap().get(&user_id).is_some_and(|n| *n > 0)
+    }
+
+    /// One of the user's connections came on screen (`true`) or left it (`false`).
+    pub fn set_watching(&self, user_id: i64, on: bool) {
+        let mut w = self.watching.lock().unwrap();
+        let n = w.entry(user_id).or_insert(0);
+        if on {
+            *n += 1;
+        } else {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                w.remove(&user_id);
+            }
+        }
+    }
+
+    /// The user has ChitChat open on screen somewhere, so they see new messages without a push.
+    pub fn is_watching(&self, user_id: i64) -> bool {
+        self.watching.lock().unwrap().get(&user_id).is_some_and(|n| *n > 0)
     }
 
     /// Returns true when this is the user's first open connection.
