@@ -1,0 +1,26 @@
+<script lang="ts">
+ import{onDestroy}from'svelte';
+ import{duration}from'./lib/recorder';
+ import{MediaVolume,seekProgress,seekPosition}from'./lib/audio-controls';
+ export let src:string;export let label:string;export let durationMs:number|null|undefined=undefined;
+ export let createAudioContext:()=>AudioContext=()=>new AudioContext();
+ let audio:HTMLAudioElement,amplifier:MediaVolume|null=null,playing=false,ended=false,position=0,total=0,rate=1,volume=100,lastVolume=100,error='',volumeHint='';
+ $: length=Number.isFinite(total)&&total>0?total:(durationMs??0)/1000;
+ async function toggle(){try{if(audio.paused){await amplifier?.resume();await audio.play();}else audio.pause();error='';}catch{error='Audio could not play. Reload the channel if the link has expired.';}}
+ function seek(value:number){if(length>0){ended=false;audio.currentTime=seekPosition(value,length);position=audio.currentTime;}}
+ function setVolume(value:number){if(!amplifier)amplifier=new MediaVolume(audio,createAudioContext);try{const result=amplifier.set(value);volume=result.percent;if(volume>0)lastVolume=volume;volumeHint=result.boostUnavailable?'Audio boost is unavailable in this browser; volume is limited to 100%.':volume<=100&&Math.abs(audio.volume-volume/100)>.01&&!amplifier.usesGain?'Use your device volume buttons on this browser.':'';}catch{volumeHint='Use your device volume buttons on this browser.';}}
+ function setRate(value:number){rate=value;audio.playbackRate=value;}
+
+ function metadata(){error='';ended=false;position=audio.currentTime;total=audio.duration;audio.playbackRate=rate;}
+ onDestroy(()=>{audio?.pause();amplifier?.dispose();audio?.removeAttribute('src');audio?.load();});
+</script>
+<audio bind:this={audio} crossorigin="anonymous" {src} preload="metadata" onloadedmetadata={metadata} ondurationchange={()=>total=audio.duration} ontimeupdate={()=>position=audio.ended?length:audio.currentTime} onplay={()=>{playing=true;ended=false;}} onpause={()=>playing=false} onended={()=>{playing=false;ended=true;position=length;}} onerror={()=>{playing=false;error='Audio is unavailable. Reload the channel to renew its link.';}}></audio>
+<div class="audio-player" role="group" aria-label={label}>
+ <div class="playback-row"><button type="button" class="play-toggle" aria-label={`${playing?'Pause':'Play'} ${label}`} onclick={toggle}><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">{#if playing}<rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/>{:else}<path d="M7 4 21 12 7 20Z"/>{/if}</svg></button><input class="audio-range seek-range" type="range" min="0" max="1000" step="1" value={seekProgress(position,length,ended)} disabled={!length} aria-label={`Seek ${label}`} oninput={event=>seek(Number(event.currentTarget.value))}/><span class="audio-time">{duration(position*1000)} / {duration(length*1000)}</span></div>
+ <div class="volume-row"><button type="button" class="volume-toggle" aria-label={`${volume===0?'Unmute':'Mute'} ${label}`} onclick={()=>setVolume(volume===0?lastVolume:0)}>{volume===0?'Muted':'Volume'}</button><input class="audio-range volume-range" type="range" min="0" max="200" step="1" value={volume} aria-label={`Volume ${label}`} oninput={event=>setVolume(Number(event.currentTarget.value))}/><output>{volume}%</output></div>
+ <label class="speed-row">Speed<select aria-label={`Playback speed ${label}`} value={rate} onchange={event=>setRate(Number(event.currentTarget.value))}>{#each [0.25,0.5,0.75,1,1.25,1.5,1.75,2] as speed}<option value={speed}>{speed}×</option>{/each}</select></label>
+ {#if volumeHint}<p class="small muted" role="status">{volumeHint}</p>{/if}{#if error}<p class="small danger" role="status">{error}</p>{/if}
+</div>
+<style>
+.audio-player{width:100%;max-width:420px;border:1px solid #52655e;border-radius:12px;background:#22343d;padding:7px 10px;color:#d5e4e8}.playback-row,.volume-row{display:flex;align-items:center;gap:9px;min-width:0}.play-toggle{flex-shrink:0;width:44px;height:44px;border-radius:50%;background:#38524e;color:#d6f6e5}.volume-toggle{height:44px;min-width:60px;font-size:12px;text-align:left}.audio-time{font-size:11px;white-space:nowrap;font-variant-numeric:tabular-nums}.audio-range{appearance:none;min-width:0;height:44px;padding:0!important;border:0!important;background:transparent!important;box-shadow:none!important;cursor:pointer;touch-action:pan-y}.seek-range{flex:1;width:80px}.volume-range{flex:1;width:140px}.audio-range::-webkit-slider-runnable-track{height:6px;border-radius:6px;background:#78968d}.audio-range::-webkit-slider-thumb{appearance:none;width:24px;height:24px;margin-top:-9px;border-radius:50%;background:#b3eacb;border:2px solid #234438}.audio-range::-moz-range-track{height:6px;border-radius:6px;background:#78968d}.audio-range::-moz-range-thumb{width:22px;height:22px;border-radius:50%;background:#b3eacb;border:2px solid #234438}.volume-row output{min-width:38px;text-align:right;font-size:12px;font-variant-numeric:tabular-nums}.audio-player p{margin:6px 0}.speed-row{display:flex;align-items:center;justify-content:flex-end;gap:8px;font-size:11px}.speed-row select{padding:5px 8px;min-height:32px;font-size:12px}
+</style>

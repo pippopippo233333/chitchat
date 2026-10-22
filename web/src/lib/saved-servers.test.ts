@@ -1,0 +1,8 @@
+import{describe,it,expect}from'vitest';import{parseServerLink,parseSavedServers,rememberServer,serverIdentity}from'./saved-servers';import type{ServerSummary}from'./api';
+const server:ServerSummary={slug:'games',name:'Games',description:'',icon_url:null,requires_password:false,invite_only:false,registration_open:true};
+describe('personal cross-host server list',()=>{
+ it('keeps identical slugs on different hosts separate, without importing neighbours',()=>{let saved=rememberServer([],'https://one.example',server);saved=rememberServer(saved,'https://two.example',server);expect(saved).toHaveLength(2);expect(serverIdentity(saved[0])).not.toBe(serverIdentity(saved[1]));expect(rememberServer(saved,'https://one.example',{...server,name:'Renamed'})).toHaveLength(2);});
+ it('parses community and invite links, stripping display-only channel queries',()=>{expect(parseServerLink('https://host.example/s/games?channel=1')).toEqual({origin:'https://host.example',slug:'games'});expect(parseServerLink('https://host.example/s/games/invite/abc-123')).toEqual({origin:'https://host.example',slug:'games',invite:'abc-123'});});
+ it.each(['javascript:alert(1)','https://user:pass@host.example/s/games','https://host.example/','https://host.example/s/../admin','https://host.example/s/games/invite/%2Fbad'])('rejects unsafe links %s',link=>expect(parseServerLink(link)).toBeNull());
+ it('handles corrupt stored lists and validates saved host origins',()=>{expect(parseSavedServers('{')).toEqual([]);expect(parseSavedServers(JSON.stringify([{origin:'javascript:alert(1)',slug:'games'},...rememberServer([],'https://one.example',server)]))).toHaveLength(1);});
+});

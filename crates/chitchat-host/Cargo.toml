@@ -1,0 +1,37 @@
+[package]
+name = "chitchat-host"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+description = "Host for ChitChat, a self-hosted chat app"
+repository = "https://github.com/pippopippo233333/chitchat"
+
+[dependencies]
+anyhow = "1"
+argon2 = "0.5"
+axum = { version = "0.8", features = ["ws"] }
+blake3 = "1"
+chrono = "0.4"
+clap = { version = "4", features = ["derive"] }
+futures-util = "0.3"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+mime = "0.3"
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+str0m = "0.24.1"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros"] }
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
+toml = "0.8"
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+webp = "0.3"
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+rcgen = "0.13"
+if-addrs = "0.13"
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

@@ -1,0 +1,2 @@
+import{describe,it,expect}from'vitest';import{storageLabel,GB}from'./resources';
+describe('adaptive storage labels',()=>{it('uses bytes, KB, MB and GB instead of rounding small usage to zero GB',()=>{expect(storageLabel(0)).toBe('0 B');expect(storageLabel(512)).toBe('512 B');expect(storageLabel(2048)).toBe('2 KB');expect(storageLabel(1.5*1024*1024)).toBe(`${(1.5).toLocaleString()} MB`);expect(storageLabel(2*GB)).toBe('2 GB');expect(storageLabel(null)).toBe('Unavailable');});});

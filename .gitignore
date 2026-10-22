@@ -1,0 +1,11 @@
+/target/
+/data/
+web/node_modules/
+web/dist/
+*.exe
+*.pem
+*.key
+.env*
+__pycache__/
+
+__pycache__/

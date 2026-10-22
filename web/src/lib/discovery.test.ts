@@ -1,0 +1,8 @@
+import{describe,it,expect}from'vitest';import{discoveryDestination,filterServers,lines,type DiscoveryServer}from'./discovery';
+const server:DiscoveryServer={url:'https://other.example/s/games',host_url:'https://other.example',host_name:'Neighbour',local:false,last_seen:1,slug:'games',name:'Board Games',description:'Chess together',member_count:4,requires_password:false,invite_only:false,registration_open:true};
+describe('discovery browser',()=>{
+ it('filters names, descriptions and hosts without interpreting markup',()=>{for(const query of ['BOARD','chess','neighbour','  chess  '])expect(filterServers([server],query)).toHaveLength(1);expect(filterServers([server],'none')).toHaveLength(0);expect(filterServers([{...server,name:'<b>Games</b>'}],'<b>')).toHaveLength(1);});
+ it('separates remote destinations from local joins',()=>{expect(discoveryDestination(server,'https://here.example')).toEqual({url:server.url,host:server.host_url,local:false});expect(discoveryDestination({...server,local:true},'https://here.example')?.local).toBe(false);expect(discoveryDestination({...server,local:true},server.host_url)?.local).toBe(true);});
+ it.each(['javascript:alert(1)','https://other.example@evil.example/s/games','https://evil.example/s/games','https://other.example/s/else','https://other.example/s/games?token=x','https://other.example/s/games#x'])('rejects invalid remote destinations: %s',url=>expect(discoveryDestination({...server,url},'https://here.example')).toBeNull());
+ it('normalizes multiline lists without duplicate entries',()=>expect(lines(' https://one.example \r\n\nhttps://two.example\nhttps://one.example')).toEqual(['https://one.example','https://two.example']));
+});
