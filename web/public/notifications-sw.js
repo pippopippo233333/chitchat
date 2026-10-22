@@ -12,9 +12,10 @@ self.addEventListener('notificationclick',event=>{
  })());
 });
 // Web Push from a ChitChat server on this site, sent only while no ChitChat page of yours is on screen.
+// renotify: it may replace the page's own silent notice for the same message, and must still alert.
 self.addEventListener('push',event=>{
  let p={};try{p=event.data?event.data.json():{};}catch{}
  const text=(v,max)=>typeof v==='string'?v.slice(0,max):'';const slug=/^[a-z0-9-]{2,32}$/.test(p.slug)?p.slug:'',channel=/^[0-9]+$/.test(p.channel_id)?p.channel_id:'';
  const target=slug?{origin:self.location.origin,slug,...(channel?{channel_id:channel}:{})}:undefined;
- event.waitUntil(self.registration.showNotification(text(p.title,120)||'ChitChat',{body:text(p.body,300)||'New message',tag:slug?self.location.origin+':'+slug+':'+channel:'chitchat',data:target}));
+ event.waitUntil(self.registration.showNotification(text(p.title,120)||'ChitChat',{body:text(p.body,300)||'New message',tag:slug?self.location.origin+':'+slug+':'+channel:'chitchat',renotify:true,vibrate:[180,90,180],data:target}));
 });
