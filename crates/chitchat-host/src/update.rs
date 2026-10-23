@@ -155,6 +155,15 @@ fn verify(data: &[u8], sig: &[u8], name: &str) -> Result<()> {
     Ok(())
 }
 
+/// `update --check`: only says whether there is a newer version (touches no data).
+pub async fn check_cli() -> Result<()> {
+    match check().await? {
+        None => println!("ChitChat host {CURRENT} is up to date."),
+        Some(r) => println!("Version {} is available (you have {CURRENT}). Install it with: chitchat-host update", r.version),
+    }
+    Ok(())
+}
+
 /// `update --verify <file>`: checks a release archive against `<file>.sig`.
 pub fn verify_file(file: &Path) -> Result<()> {
     let name = file.file_name().and_then(|n| n.to_str()).context("no file name")?;
@@ -206,10 +215,18 @@ fn swap_in(new: &Path, place: &Path) -> Result<()> {
     } else if old.exists() {
         std::fs::remove_file(&old)?;
     }
-    if place.exists() {
+    let had = place.exists();
+    if had {
         std::fs::rename(place, &old).with_context(|| format!("moving {} aside", place.display()))?;
     }
-    std::fs::rename(new, place).with_context(|| format!("putting the new {} in place", place.display()))
+    if let Err(e) = std::fs::rename(new, place) {
+        // Leave things as they were: the original back in its place.
+        if had {
+            std::fs::rename(&old, place).with_context(|| format!("putting {} back after: {e}", place.display()))?;
+        }
+        return Err(e).with_context(|| format!("putting the new {} in place", place.display()));
+    }
+    Ok(())
 }
 
 /// Puts `<place>.old` back.
@@ -243,8 +260,9 @@ fn copy_dir(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Downloads, checks and installs `release`. The caller then restarts the host.
-async fn install(host: &Host, web_dir: &Path, release: &Release) -> Result<()> {
+/// Downloads, checks and installs `release`, and returns where the binary is (the new one now).
+/// The caller then restarts the host.
+async fn install(host: &Host, web_dir: &Path, release: &Release) -> Result<PathBuf> {
     let archive = download(&release.archive_url, MAX_ARCHIVE).await.context("downloading the update")?;
     let sig = download(&release.sig_url, 64 * 1024).await.context("downloading its signature")?;
     verify(&archive, &sig, &release.archive_name)?;
@@ -295,15 +313,25 @@ async fn install(host: &Host, web_dir: &Path, release: &Release) -> Result<()> {
 
     let pending = Pending { from: CURRENT.into(), to: release.version.clone(), attempts: 0, exe: exe.clone(), web: web.clone(), backup, servers };
     std::fs::write(dir.join("pending.json"), serde_json::to_vec_pretty(&pending)?)?;
-    swap_in(&exe_new, &exe)?;
-    if let Err(e) = swap_in(&web_new, &web) {
-        let _ = swap_back(&exe);
+    // swap_in leaves its target as it was when it fails; undo the binary if the web client fails.
+    let mut swapped = swap_in(&exe_new, &exe);
+    if swapped.is_ok()
+        && let Err(e) = swap_in(&web_new, &web)
+    {
+        swapped = Err(match swap_back(&exe) {
+            Ok(()) => e,
+            Err(b) => e.context(format!("and restoring the old binary failed: {b:#}")),
+        });
+    }
+    if let Err(e) = swapped {
+        let _ = std::fs::remove_file(&exe_new);
+        let _ = std::fs::remove_dir_all(&web_new);
         let _ = std::fs::remove_file(dir.join("pending.json"));
         return Err(e);
     }
     let _ = std::fs::remove_dir_all(&staging);
     tracing::info!("update to {} installed; restarting", release.version);
-    Ok(())
+    Ok(exe)
 }
 
 fn chrono_stamp() -> String {
@@ -317,22 +345,23 @@ fn write_result(data_dir: &Path, ok: bool, message: &str) {
 
 /// Starts the host again with the same arguments: the service manager does it when there is one,
 /// otherwise this process replaces itself (Unix) or starts the new one (Windows).
-pub fn restart() -> ! {
+/// `exe` is the binary's path: after a swap, the running process's own path (`current_exe`)
+/// points at the moved-aside old binary.
+pub fn restart(exe: &Path) -> ! {
     if std::env::var_os("INVOCATION_ID").is_some() {
         std::process::exit(RESTART_CODE); // systemd
     }
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("chitchat-host"));
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        let e = std::process::Command::new(&exe).args(&args).exec();
+        let e = std::process::Command::new(exe).args(&args).exec();
         tracing::error!("couldn't restart: {e}");
     }
     #[cfg(not(unix))]
     {
         // The new process waits for the port: see `wait_for_port`.
-        if let Err(e) = std::process::Command::new(&exe).args(&args).env("CHITCHAT_RESTARTED", "1").spawn() {
+        if let Err(e) = std::process::Command::new(exe).args(&args).env("CHITCHAT_RESTARTED", "1").spawn() {
             tracing::error!("couldn't restart: {e}");
         }
     }
@@ -371,7 +400,7 @@ pub fn on_start(data_dir: &Path) -> Result<()> {
     swap_back(&pending.web)?;
     std::fs::remove_file(&file)?;
     write_result(data_dir, false, &format!("Version {CURRENT} didn't start, so {} was restored (with the databases as they were before the update).", pending.from));
-    restart()
+    restart(&pending.exe)
 }
 
 /// Once the host is serving: a new version that runs for a minute is kept.
@@ -431,10 +460,10 @@ pub async fn start_apply(host: std::sync::Arc<Host>, web_dir: PathBuf) -> Result
     let version = release.version.clone();
     tokio::spawn(async move {
         match install(&host, &web_dir, &release).await {
-            Ok(()) => {
+            Ok(exe) => {
                 // Let the response and events go out first.
                 tokio::time::sleep(Duration::from_millis(800)).await;
-                restart();
+                restart(&exe);
             }
             Err(e) => {
                 tracing::warn!("update failed: {e:#}");
@@ -448,10 +477,9 @@ pub async fn start_apply(host: std::sync::Arc<Host>, web_dir: PathBuf) -> Result
 }
 
 /// `chitchat-host update [--check]` (with the host stopped).
-pub async fn cli(host: &Host, web_dir: &Path, only_check: bool) -> Result<()> {
+pub async fn cli(host: &Host, web_dir: &Path) -> Result<()> {
     match check().await? {
         None => println!("ChitChat host {CURRENT} is up to date."),
-        Some(r) if only_check => println!("Version {} is available (you have {CURRENT}). Install it with: chitchat-host update", r.version),
         Some(r) => {
             println!("Installing version {} (you have {CURRENT})…", r.version);
             install(host, web_dir, &r).await?;
@@ -512,6 +540,25 @@ mod tests {
         h.set_size(0);
         b.append_link(&mut h, "link", "/etc/passwd").unwrap();
         assert!(unpack(&b.into_inner().unwrap().finish().unwrap(), &dir).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn failed_swap_keeps_the_original() {
+        let root = std::env::temp_dir().join(format!("chitchat-swap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let place = root.join("chitchat-host");
+        std::fs::write(&place, b"old").unwrap();
+        assert!(swap_in(&root.join("missing.new"), &place).is_err());
+        assert_eq!(std::fs::read(&place).unwrap(), b"old");
+        assert!(!with_suffix(&place, ".old").exists());
+
+        std::fs::write(root.join("new"), b"new").unwrap();
+        swap_in(&root.join("new"), &place).unwrap();
+        assert_eq!(std::fs::read(&place).unwrap(), b"new");
+        swap_back(&place).unwrap();
+        assert_eq!(std::fs::read(&place).unwrap(), b"old");
         let _ = std::fs::remove_dir_all(&root);
     }
 

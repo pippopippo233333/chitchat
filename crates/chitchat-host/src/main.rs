@@ -133,6 +133,12 @@ enum ServerCmd {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,tower_http=warn".into())).init();
     let cli = Cli::parse();
+    // These two only read: they must not open (or migrate) the data directory.
+    match &cli.cmd {
+        Some(Cmd::Update { verify: Some(file), .. }) => return update::verify_file(file),
+        Some(Cmd::Update { check: true, .. }) => return update::check_cli().await,
+        _ => {}
+    }
     // A new version on probation is counted (or rolled back) before it touches the databases.
     if matches!(cli.cmd, None | Some(Cmd::Run(_))) {
         update::on_start(&cli.data_dir).context("checking the last update")?;
@@ -160,8 +166,7 @@ async fn main() -> Result<()> {
             println!("They should log in and change it in their settings.");
             Ok(())
         }
-        Cmd::Update { verify: Some(file), .. } => update::verify_file(&file),
-        Cmd::Update { check, web_dir, .. } => update::cli(&host, &web_dir, check).await,
+        Cmd::Update { web_dir, .. } => update::cli(&host, &web_dir).await,
         Cmd::Server(ServerCmd::List) => {
             let servers = host.servers.read().await;
             if servers.is_empty() {

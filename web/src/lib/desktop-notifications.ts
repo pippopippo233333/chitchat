@@ -1,8 +1,15 @@
 import type{SavedServer}from'./saved-servers';
-export interface NotificationTarget {origin:string;slug:string;channel_id?:string}
+export interface NotificationTarget {origin:string;slug:string;channel_id?:string;message_id?:string}
 let registration:Promise<ServiceWorkerRegistration|null>|undefined;
 export function prepareNotifications(){if(typeof navigator==='undefined'||!('serviceWorker'in navigator)||!isSecureContext)return Promise.resolve(null);registration??=(async()=>{try{await navigator.serviceWorker.register('/notifications-sw.js',{scope:'/',updateViaCache:'none'});return await navigator.serviceWorker.ready;}catch{registration=undefined;return null;}})();return registration;}
-export function knownNotificationTarget(value:unknown,saved:SavedServer[]):NotificationTarget|null{if(!value||typeof value!=='object')return null;const input=value as Partial<NotificationTarget>;if(typeof input.origin!=='string'||typeof input.slug!=='string'||!/^[a-z0-9-]{2,32}$/.test(input.slug)||input.channel_id!==undefined&&(typeof input.channel_id!=='string'||!/^[0-9]+$/.test(input.channel_id)))return null;try{const url=new URL(input.origin);if(!['http:','https:'].includes(url.protocol)||url.username||url.password||url.origin!==input.origin||!saved.some(s=>s.origin===input.origin&&s.slug===input.slug))return null;return{origin:url.origin,slug:input.slug,...(input.channel_id?{channel_id:input.channel_id}:{})};}catch{return null;}}
+export function knownNotificationTarget(value:unknown,saved:SavedServer[]):NotificationTarget|null{
+ if(!value||typeof value!=='object')return null;
+ const input=value as Partial<NotificationTarget>;
+ const id=(value:unknown)=>typeof value==='string'&&/^[0-9]{1,19}$/.test(value);
+ if(typeof input.origin!=='string'||typeof input.slug!=='string'||!/^[a-z0-9-]{2,32}$/.test(input.slug)||input.channel_id!==undefined&&!id(input.channel_id)||input.message_id!==undefined&&(!id(input.message_id)||!input.channel_id))return null;
+ try{const url=new URL(input.origin);if(!['http:','https:'].includes(url.protocol)||url.username||url.password||url.origin!==input.origin||!saved.some(s=>s.origin===input.origin&&s.slug===input.slug))return null;
+ return{origin:url.origin,slug:input.slug,...(input.channel_id?{channel_id:input.channel_id}:{}),...(input.message_id?{message_id:input.message_id}:{})};}catch{return null;}
+}
 // Web Push (closed or suspended page): one browser subscription, registered with every saved server on this site.
 interface PushApi {origin:string;request<T>(path:string,method?:string,body?:unknown):Promise<T>}
 function keyBytes(key:string){const b=atob(key.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-key.length%4)%4));return Uint8Array.from(b,c=>c.charCodeAt(0));}
