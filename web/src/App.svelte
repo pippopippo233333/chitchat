@@ -11,7 +11,7 @@
   import { memberPresence } from './lib/profile';
   import RichComposer from './RichComposer.svelte';
   import IncomingCall from './IncomingCall.svelte';
-  import { addRing, callRoom, liveRings, RING_SECONDS, type Ring } from './lib/calls';
+  import { addRing, callRoom, liveRings, ongoingCalls, RING_SECONDS, type Ring } from './lib/calls';
   import { emojiGroups, customReaction, customToken, reactionName } from './lib/custom-emoji';
   import type { User, CustomEmoji } from './lib/api';
   import Appearance from './Appearance.svelte';import{isDesktopApp,desktopNotify,onDesktopNotificationClick,desktopVersion,desktopCheckUpdates}from'./lib/desktop';import{applyTheme,loadTheme,storeTheme}from'./lib/theme';
@@ -69,7 +69,8 @@
   let voiceStates: VoiceState[] = [];
   let voiceSpeaking: Record<string, boolean> = {};
   // Private calls (docs/api.md 4p): who is ringing us, and names for calls we were invited into.
-  let rings: Ring[] = [], callNames: Record<string, string> = {};
+  let rings: Ring[] = [], callNames: Record<string, string> = {}, seenCalls = new Set<string>();
+  $: if (snapshot) for (const ring of ongoingCalls(voiceStates, dms, snapshot.user.id, $voiceStatus.channelId ?? null, seenCalls)) { rings = addRing(rings, ring); setTimeout(() => rings = liveRings(rings), RING_SECONDS * 1000 + 100); }
   // The host's version when this page loaded; a different one after a reconnect means the host was updated.
   let hostVersion = '', hostUpdated = false;
   async function checkHostVersion() { try { const info = await api.host(); if (!info?.version) return; if (!hostVersion) hostVersion = info.version; else if (info.version !== hostVersion) hostUpdated = true; } catch { /* Checked again on the next reconnect. */ } }
@@ -281,7 +282,7 @@
     reacting = null; composeEmojiAnchor = null;
     hubHostServers=null;socialAbort?.abort();dms=[];readStates=[];preferences=defaultPreferences();preferencesLoaded=false;socialError='';socialLoading=false;viewingHistory=false;jumpId='';clearTimeout(ackTimer);clearTimeout(readRefreshTimer);ackInFlight.clear();notifiedIds.clear();
     aiRefreshVersion++; aiFlags = []; latestAiFlag = null; aiMore = false; aiLoading = false; aiLiveUpdates.clear();
-    voice.leave(); voiceStates = []; voiceSpeaking = {}; rings = []; callNames = {}; hostVersion = ''; hostUpdated = false; channelViews.clear();
+    voice.leave(); voiceStates = []; voiceSpeaking = {}; rings = []; callNames = {}; seenCalls = new Set(); hostVersion = ''; hostUpdated = false; channelViews.clear();
     contextVersion++; historyVersion++; historyAbort?.abort(); connection?.stop(); connection = undefined;
     snapshot = null; activeId = ''; messages = []; draft = ''; reply = null; editing = null; typing = {}; liveChanges.clear();
     ownReactionEvents.clear(); cooldownUntil = 0; mutedUntil = 0;
@@ -559,7 +560,7 @@
     rings = rings.filter(ring => ring.channel_id !== id);
     void voice.join(id, { speak: can(snapshot.permissions, 13, snapshot.is_owner), stream: can(snapshot.permissions, 14, snapshot.is_owner), suppressed: muted });
   }
-  function declineCall(ring: Ring) { rings = rings.filter(item => item.channel_id !== ring.channel_id); connection?.send('call_decline', { channel_id: ring.channel_id }); }
+  function declineCall(ring: Ring) { seenCalls.add(ring.channel_id); rings = rings.filter(item => item.channel_id !== ring.channel_id); connection?.send('call_decline', { channel_id: ring.channel_id }); }
   function inviteToCall(userId: string) { const id = voice.view.channelId; if (id) connection?.send('call_invite', { channel_id: id, user_id: userId }); }
   function joinVoice(channel: Channel) {
     if (channel.type === 'dm') { startCall(channel.id); return; }

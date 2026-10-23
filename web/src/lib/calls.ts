@@ -1,4 +1,4 @@
-import type { Channel, DirectMessage, Snapshot } from './api';
+import type { Channel, DirectMessage, Snapshot, VoiceState } from './api';
 
 // Private calls (docs/api.md 4p): voice in a direct message. A ring is someone calling us or inviting us into a call.
 export interface Ring { channel_id: string; from_user_id: string; from_name: string; invited: boolean; at: number }
@@ -24,4 +24,22 @@ export function startRingtone(volume: number): () => void {
   audio.loop = true; audio.volume = Math.min(1, volume / 100);
   void audio.play().catch(() => {});
   return () => { audio.pause(); audio.src = ''; };
+}
+
+// Calls already going on in our direct messages that should ring us: on opening the app from a call notification
+// the ring itself was sent while we were away. `seen` holds calls we were in, declined or were already rung for;
+// a call drops out of it when it ends, so the next call rings again.
+export function ongoingCalls(states: VoiceState[], dms: DirectMessage[], me: string, joined: string | null, seen: Set<string>): Omit<Ring, 'at'>[] {
+  const live = new Set(states.filter(state => dms.some(dm => dm.id === state.channel_id)).map(state => state.channel_id));
+  for (const state of states) if (live.has(state.channel_id) && state.user_id === me) seen.add(state.channel_id);
+  if (joined && live.has(joined)) seen.add(joined);
+  for (const id of [...seen]) if (!live.has(id)) seen.delete(id);
+  const rings: Omit<Ring, 'at'>[] = [];
+  for (const id of live) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const caller = states.find(state => state.channel_id === id && state.user_id !== me), dm = dms.find(item => item.id === id);
+    rings.push({ channel_id: id, from_user_id: caller?.user_id ?? dm?.user.id ?? '', from_name: dm?.user.display_name ?? 'Someone', invited: false });
+  }
+  return rings;
 }

@@ -7,13 +7,16 @@ A self-hosted chat app in the spirit of Discord: text channels, voice and screen
 ## Features
 
 - **Servers and channels**: one host runs several servers (communities), each with its own accounts, text channels, voice channels and categories.
-- **Messages**: replies, edits, reactions, YouTube embeds.
+- **Messages**: replies, edits, reactions (any emoji, plus custom server emoji), mentions, pins, threads, search and YouTube embeds.
+- **Direct messages and private calls**: one-to-one chats, and voice calls in them that ring the other person, who can invite others in. Hosts limit how many calls run at once.
+- **Notifications**: unread and mention badges, per-channel settings, and Web Push to phones and browsers while ChitChat is closed.
 - **Files**: images (resized, metadata removed), videos, documents, audio files and recorded voice messages, with per-user and per-server storage limits.
 - **Voice and screen sharing**: built-in WebRTC SFU (no extra media server), with screen audio where the browser supports it.
 - **Roles and permissions**, invites (limited or unlimited, revocable), bans, timeouts, IP rules, slow mode, anti-spam, and an audit log.
 - **Optional AI moderation**: a local classifier and/or an LLM you choose (local or cloud, with a notice to members).
 - **Server discovery without a central server**: hosts that opt in share their listed servers with each other (gossip).
-- **Host dashboard**: CPU, RAM and disk use with limits, storage per server, and backups.
+- **Host dashboard**: CPU, RAM and disk use with limits, storage per server, backups, and one-click signed updates from GitHub Releases (with automatic rollback).
+- **Desktop app** for Windows, macOS and Linux (Tauri), with system notifications, a tray icon and its own updates. On phones, install the web client from the browser.
 - **Backups**: a script that makes daily, checked snapshots while the host keeps running, and restores them into a new folder.
 
 ## Quick start
@@ -49,7 +52,7 @@ To let others in (LAN, Tailscale, a domain with HTTPS, or a tunnel), follow the 
 
 - Accounts belong to one server: the same person registers separately on each server.
 - No end-to-end encryption. Whoever runs the host can read everything on it, like most chat servers.
-- No push notifications, message search or direct messages yet. There's no desktop or mobile app yet; use the browser.
+- No native mobile app: on phones, use the browser or install the web client to the home screen. The desktop app's installers aren't code-signed yet, so Windows and antivirus programs may warn about new versions.
 - Backups stay on the host's own disk; copy them somewhere else yourself.
 - Tested mainly on Windows 11 and Ubuntu hosts with Chromium-based browsers (desktop and Android); other browsers may have gaps.
 
