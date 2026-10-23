@@ -4,6 +4,7 @@ mod admin;
 pub(crate) mod ai;
 mod auth;
 mod backups;
+mod calls;
 mod channels;
 mod conversations;
 mod discovery;

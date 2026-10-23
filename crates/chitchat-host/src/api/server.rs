@@ -70,7 +70,7 @@ pub async fn ready_snapshot(auth: &Auth) -> ApiResult<Value> {
         "channels": db::list_channels(&srv.db, auth.user.id, auth.perms).await?,
         "members": db::list_members(srv).await?,
         "roles": db::list_roles(&srv.db).await?,
-        "voice_states": srv.voice_states(),
+        "voice_states": srv.voice_states(auth.user.id),
         "ai_moderation": crate::ai::notice(&srv.ai.config()),
         "emojis": super::emoji::list_for(srv).await?,
     }))

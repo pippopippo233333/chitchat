@@ -118,6 +118,18 @@ Updating restarts ChitChat.",
     }
 }
 
+/// From the client: this app's version (shown with "Check for updates").
+#[tauri::command]
+fn app_version(app: AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
+/// From the client: the same as "Check for updates" in the tray menu.
+#[tauri::command]
+fn check_updates(app: AppHandle) {
+    tauri::async_runtime::spawn(check_for_update(app, true));
+}
+
 /// From the client: a system notification about a new message. `target` (opaque to the app, at
 /// most 1 KiB) comes back to the client in a `notification-click` event when it is clicked. With
 /// `when_closed` false, nothing shows while the window is closed to the tray.
@@ -175,7 +187,7 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Postponed(Mutex::new(None)))
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec![HIDDEN_ARG])))
-        .invoke_handler(tauri::generate_handler![notify])
+        .invoke_handler(tauri::generate_handler![notify, app_version, check_updates])
         .setup(|app| {
             let nav = app.handle().clone();
             let popup = app.handle().clone();

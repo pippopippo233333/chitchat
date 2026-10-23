@@ -18,7 +18,7 @@
 .ai-notice-chip{border:1px solid #a4e4c24d;color:#bce6d0;background:#244136;border-radius:20px;padding:5px 10px;font-size:11px;white-space:nowrap}.ai-channel-notice{display:flex;align-items:center;gap:10px}.ai-channel-notice>span{flex:1}.voice-panel{position:relative}.voice-panel.custom-height{flex:0 0 auto!important;max-height:calc(100dvh - 150px)!important;min-height:180px;box-sizing:border-box}.voice-panel.voice-collapsed{flex:0 0 auto!important;max-height:none!important;padding:10px 16px!important;overflow:visible}.voice-compact-bar{display:flex;align-items:center;flex-wrap:wrap;gap:8px}.voice-compact-bar>strong{margin-right:auto;font-size:12px}.voice-compact-bar button{font-size:11px;padding:6px 9px}.voice-resize-handle{position:sticky;bottom:-14px;display:flex;align-items:center;justify-content:center;min-height:18px;width:100%;padding:0;margin:12px 0 -12px;background:transparent;border:0;cursor:ns-resize;touch-action:none}.voice-resize-handle>span{display:block;height:3px;width:64px;border-radius:5px;background:#7d9a90}.voice-resize-handle:hover>span,.voice-resize-handle:focus-visible>span{background:#bce6d0}.voice-room .voice-resize-handle{bottom:-30px}.voice-room-heading>.button-row{margin:0}
 .voice-panel{display:flex;flex-direction:column;overflow:hidden;padding:0!important}.voice-panel-content{min-height:0;flex:1;overflow:auto;padding:14px 25px}.voice-panel.voice-room>.voice-panel-content{padding:30px}.voice-panel.voice-collapsed{padding:10px 16px!important}.voice-resize-handle,.voice-room .voice-resize-handle{position:relative;bottom:auto;flex:0 0 20px;min-height:20px;margin:0;background:#1c3030;z-index:2}
 
-.composer-row{flex-wrap:wrap}.composer-row textarea{flex-basis:50%}
+.composer-row{flex-wrap:wrap}.composer-row textarea,.composer-row .rich{flex-basis:50%}
 
 .screen-awake-option{display:flex;align-items:center;gap:7px;margin-top:9px;color:var(--muted);font-size:11px}.screen-awake-option input{width:16px;height:16px;margin:0;accent-color:var(--accent)}
 
@@ -28,3 +28,4 @@
 /* Sliders: no text-field box, so the track and its fill span the full width on phones too. */
 input[type=range]{padding:0;border:0;background:transparent;accent-color:var(--accent);min-height:32px;width:100%}
 .add-reaction{display:inline-flex;align-items:center;color:var(--muted);opacity:0;transition:opacity .1s}.message:hover .add-reaction,.add-reaction:focus-visible{opacity:1}@media(hover:none){.add-reaction{opacity:1}}
+.icon-button.call-live{color:var(--accent);background:#2b463c}

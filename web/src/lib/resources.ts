@@ -5,7 +5,9 @@ export interface HostResources {
   ram: { total_bytes: number | null; available_bytes: number | null; server: ResourceRam; ai: ResourceRam };
   disk: { total_bytes: number | null; free_bytes: number | null };
   ai_disk_bytes: number | null;
+  calls?: CallLimits;
 }
+export interface CallLimits { enabled: boolean; max_calls: number; max_people: number }
 export interface ServerStorage { used_bytes: number; limit_bytes: number | null; files_bytes: number; messages_bytes: number; ai_bytes: number; full_action: 'delete_oldest' | 'refuse' }
 export const GB = 1024 ** 3;
 export function giga(bytes: number | null | undefined) { return bytes === null || bytes === undefined ? null : bytes / GB; }

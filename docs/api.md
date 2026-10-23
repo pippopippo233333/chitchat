@@ -779,6 +779,30 @@ a rule that changed in the meantime.
   Unknown/deleted IDs show a plain text placeholder. Never build image URLs from arbitrary
   message text. Only use validated URLs from the current server's list.
 
+## 4p. Private calls (voice in direct messages)
+
+A call is voice in a direct message channel: `voice_join {channel_id: <dm id>, offer}` over the WebSocket, with the
+same SDP, state, speaking and leave messages as voice channels (4e). It needs `CONNECT_VOICE`.
+
+- **Who may join.** Only the two people in the direct message can start its call. Anyone in the call can invite
+  another member of the server, who may then join that call (they don't see the direct message itself). The call
+  and its invitations end when the last person leaves.
+- **Privacy.** `voice_state_update` and `voice_speaking` for a call go only to its people (the two DM members and
+  anyone invited), and `ready.voice_states` leaves out calls you aren't part of. Calls go through the host's
+  server like voice channels; they are encrypted in transit (DTLS-SRTP) but not end to end.
+- **Host limits** (`GET/PATCH /host/resources`, host admin), for every server on the host:
+  `"calls": {"enabled": true, "max_calls": 5, "max_people": 4}`. `max_calls` is 1-100 calls at once,
+  `max_people` 2-25 per call. A join over a limit fails with `voice_end` reason `calls_disabled`, `calls_busy`
+  or `voice_full`.
+
+| WebSocket | Data | |
+|---|---|---|
+| → `call_decline` | `{channel_id}` | Say no to a ring; the people in the call get `call_declined`. |
+| → `call_invite` | `{channel_id, user_id}` | Someone in the call invites a member (rings them). Errors come back as `call_error {reason, message}` (you stay in the call): `not_in_call`, `unknown_user`, `voice_full`. |
+| ← `call_ring` | `{channel_id, from_user_id, from_name, invited}` | Someone started a call with you or invited you. People who aren't connected get an urgent push ("X is calling you"). |
+| ← `call_declined` | `{channel_id, user_id}` | Someone declined. |
+| ← `call_end` | `{channel_id}` | The last person left; stop ringing. |
+
 ## 5. WebSocket: `GET /s/{slug}/api/ws`
 
 All frames are JSON text: `{ "type": "…", "data": { … } }`.

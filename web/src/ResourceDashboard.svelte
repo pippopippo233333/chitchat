@@ -7,6 +7,7 @@
   import ResourceGauge from './ResourceGauge.svelte';
   import BackupCard from './BackupCard.svelte';
   import UpdateCard from './UpdateCard.svelte';
+  import CallLimitsCard from './CallLimitsCard.svelte';
   export let api: Api;
   let resources: HostResources | null = null, storage: ServerStorage | null = null;
   let hostAdmin = true, polling = false, busy = false, loading = true, alive = true;
@@ -65,6 +66,7 @@
     <label class="check-label"><input type="checkbox" bind:checked={aiCapped} disabled={!resources.cpu.ai.unit}/>Limit Laya CPU separately</label>{#if aiCapped}<label>Laya CPU cores<input type="number" min="0.5" max={resources.cpu.cores_total} step="0.5" required bind:value={aiCores}/></label>{/if}
     <button class="primary">Review host limits</button>
   </fieldset></form>
+  {#if resources.calls}{#key JSON.stringify(resources.calls)}<CallLimitsCard {api} limits={resources.calls} onSaved={value => resources = value}/>{/key}{/if}
 {/if}
 {#if pending}<div class="confirm-box" role="alert"><h3>Apply {pending === 'host' ? 'host resource limits' : 'storage policy'}?</h3>{#if pending === 'host'}<p>Server CPU: {serverCapped ? `${serverCores} cores` : 'unlimited'}. Server RAM: {ramCapped ? `${serverRamGb} GB` : 'unlimited'}. Laya CPU: {aiCapped ? `${aiCores} cores` : 'unlimited'}. These affect everyone using the host; a low RAM limit can restart it.</p>{:else}<p>Storage: {storageGb} GB. {policy === 'delete_oldest' ? 'Older messages and their attachments may be permanently removed when new content arrives.' : 'New messages and uploads will be refused when full.'}</p>{/if}<div class="button-row"><button class="secondary" disabled={busy} onclick={() => pending = null}>Cancel</button><button class="primary" disabled={busy} onclick={save}>{busy ? 'Saving…' : 'Confirm limits'}</button></div></div>{/if}
 <button class="secondary" disabled={busy || polling} onclick={refresh}>Refresh usage</button>

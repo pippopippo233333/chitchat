@@ -120,7 +120,7 @@ pub async fn handle(srv: &Arc<ServerCtx>, auth: &Auth, vc: &mut VoiceConn, ty: &
             if let Some(sfu) = voice::sfu() {
                 sfu.set_flags(vc.session, flags(&state, auth.perms));
             }
-            srv.emit(Event::new("voice_state_update", state.json(user_id)));
+            srv.emit_voice(state.channel_id, Event::new("voice_state_update", state.json(user_id)));
             Ok(())
         }
         "voice_leave" => {
@@ -140,9 +140,11 @@ pub async fn handle(srv: &Arc<ServerCtx>, auth: &Auth, vc: &mut VoiceConn, ty: &
             }
             vc.speaking = speaking;
             vc.last_speaking = Some(Instant::now());
-            srv.emit(Event::new("voice_speaking", json!({ "user_id": user_id.to_string(), "channel_id": s.channel_id.to_string(), "speaking": speaking })));
+            srv.emit_voice(s.channel_id, Event::new("voice_speaking", json!({ "user_id": user_id.to_string(), "channel_id": s.channel_id.to_string(), "speaking": speaking })));
             Ok(())
         }
+        "call_decline" => super::calls::decline(srv, user_id, data),
+        "call_invite" => super::calls::invite(srv, auth, data).await,
         _ => Ok(()),
     }
 }
@@ -151,16 +153,23 @@ async fn join(srv: &Arc<ServerCtx>, auth: &Auth, vc: &mut VoiceConn, data: &Valu
     let user_id = auth.user.id;
     let sfu = voice::sfu().ok_or(("voice_unavailable", "Voice isn't available on this host."))?;
     let channel_id = data.get("channel_id").and_then(Value::as_str).and_then(crate::ids::parse).ok_or(("unknown_channel", "No such voice channel."))?;
-    let channel = match db::channel_row(&srv.db, channel_id).await {
-        Ok(Some(c)) if c.kind == "voice" => c,
+    let channel = match db::any_channel_row(&srv.db, channel_id).await {
+        Ok(Some(c)) if c.kind == "voice" || c.kind == "dm" => c,
         _ => return Err(("unknown_channel", "No such voice channel.")),
     };
-    if !perms::has(auth.perms, VIEW_CHANNEL | CONNECT_VOICE) {
+    let private = channel.kind == "dm";
+    if private {
+        if !perms::has(auth.perms, CONNECT_VOICE) {
+            return Err(("missing_permission", "You don't have permission to join calls."));
+        }
+    } else if !perms::has(auth.perms, VIEW_CHANNEL | CONNECT_VOICE) {
         return Err(("missing_permission", "You don't have permission to join voice channels."));
     }
     let offer: SdpOffer = data.get("offer").cloned().and_then(|o| serde_json::from_value(o).ok()).ok_or(("bad_offer", "voice_join needs a valid offer."))?;
     let others = srv.voice.lock().unwrap().iter().filter(|(u, s)| s.channel_id == channel_id && **u != user_id).count() as i64;
-    if !auth.is_owner && others >= channel.user_limit {
+    // A private call: checked (and started, which rings the others) before anyone is connected.
+    let ring = if private { super::calls::admit(srv, &channel, user_id, others).await? } else { None };
+    if !private && !auth.is_owner && others >= channel.user_limit {
         return Err(("voice_full", "This voice channel is full."));
     }
     let local = local_addr(vc.host.as_deref(), sfu.port).await.ok_or(("voice_unavailable", "Can't work out this host's address for voice."))?;
@@ -174,13 +183,27 @@ async fn join(srv: &Arc<ServerCtx>, auth: &Auth, vc: &mut VoiceConn, data: &Valu
         screen_mids: vec![],
     };
     let previous = srv.voice.lock().unwrap().insert(user_id, state.clone());
-    if let Some(p) = previous.filter(|p| p.session != vc.session) {
+    if let Some(p) = &previous
+        && p.session != vc.session
+    {
         // One voice connection per user: the other tab or device drops out.
         sfu.leave(p.session, Some("moved"));
     }
+    // Moving out of a private call (its people see them go, and it may have ended), or from a
+    // voice channel into a call (everyone sees them leave the channel, not where they went).
+    if let Some(p) = previous.filter(|p| p.channel_id != channel_id && (private || srv.calls.lock().unwrap().contains_key(&p.channel_id))) {
+        srv.emit_voice(
+            p.channel_id,
+            Event::new("voice_state_update", json!({ "user_id": user_id.to_string(), "channel_id": null, "previous_channel_id": p.channel_id.to_string() })),
+        );
+        srv.end_call_if_empty(p.channel_id);
+    }
     vc.speaking = false;
     sfu.join(vc.session, (srv.slug.as_str().into(), channel_id), local, offer, flags(&state, auth.perms), vc.out.clone());
-    srv.emit(Event::new("voice_state_update", state.json(user_id)));
+    srv.emit_voice(channel_id, Event::new("voice_state_update", state.json(user_id)));
+    if let Some(ring) = ring {
+        super::calls::ring(srv, &auth.user, channel_id, ring, false);
+    }
     Ok(())
 }
 
@@ -213,7 +236,7 @@ pub async fn recheck(srv: &ServerCtx, user_id: i64, session: u64, perms: u64) ->
         if let Some(sfu) = voice::sfu() {
             sfu.set_flags(session, flags(&state, perms));
         }
-        srv.emit(Event::new("voice_state_update", state.json(user_id)));
+        srv.emit_voice(state.channel_id, Event::new("voice_state_update", state.json(user_id)));
     }
     None
 }

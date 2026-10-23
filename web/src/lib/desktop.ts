@@ -10,3 +10,6 @@ export function onDesktopNotificationClick(handler:(target:unknown)=>void):()=>v
  const listening=bridge()?.event?.listen('notification-click',event=>{try{handler(JSON.parse(String(event.payload)));}catch{/* Not ours. */}});
  return()=>{void listening?.then(stop=>stop());};
 }
+/** The desktop app's version, and its update check (the app shows the result in a dialog). */
+export async function desktopVersion():Promise<string>{return String(await bridge()?.core.invoke('app_version')??'');}
+export async function desktopCheckUpdates(){await bridge()?.core.invoke('check_updates');}

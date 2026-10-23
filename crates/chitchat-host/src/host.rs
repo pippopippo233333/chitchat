@@ -32,6 +32,23 @@ impl HostConfig {
     }
 }
 
+/// A private call: voice in a direct message. Only its two members and the people they invited
+/// may join, ring or see anything about it.
+#[derive(Clone)]
+pub struct Call {
+    pub members: Vec<i64>,
+    pub invited: Vec<i64>,
+}
+
+impl Call {
+    pub fn audience(&self) -> Vec<i64> {
+        self.members.iter().chain(&self.invited).copied().collect()
+    }
+    pub fn allows(&self, user: i64) -> bool {
+        self.members.contains(&user) || self.invited.contains(&user)
+    }
+}
+
 /// One member's voice connection (docs/api.md 4e, VoiceState).
 #[derive(Clone)]
 pub struct VoiceState {
@@ -78,6 +95,8 @@ pub struct ServerCtx {
     file_key: [u8; 32],
     /// Who is in which voice channel, per user (one voice connection per user).
     pub voice: Mutex<HashMap<i64, VoiceState>>,
+    /// Private calls going on (voice in a direct message), by DM channel.
+    pub calls: Mutex<HashMap<i64, Call>>,
     /// Owner-only AI moderation (settings, queue, stats).
     pub ai: crate::ai::Ai,
     /// Storage used (files + message text) and when it was measured; see `api::storage`.
@@ -112,6 +131,7 @@ impl ServerCtx {
             spam: Mutex::new(SpamGuard::default()),
             ip: std::sync::RwLock::new(ip),
             voice: Mutex::new(HashMap::new()),
+            calls: Mutex::new(HashMap::new()),
             ai,
             storage_used: tokio::sync::Mutex::new(None),
         }
@@ -160,8 +180,35 @@ impl ServerCtx {
         let _ = self.events.send(Arc::new(ev));
     }
 
-    pub fn voice_states(&self) -> Vec<serde_json::Value> {
-        self.voice.lock().unwrap().iter().map(|(u, s)| s.json(*u)).collect()
+    /// Everyone's voice state that `viewer` may see: private calls only for their participants.
+    pub fn voice_states(&self, viewer: i64) -> Vec<serde_json::Value> {
+        let calls = self.calls.lock().unwrap();
+        self.voice.lock().unwrap().iter().filter(|(_, s)| calls.get(&s.channel_id).is_none_or(|c| c.allows(viewer))).map(|(u, s)| s.json(*u)).collect()
+    }
+
+    /// Sends a voice event about `channel_id`: to everyone, or only to a private call's people.
+    pub fn emit_voice(&self, channel_id: i64, ev: Event) {
+        let audience = self.calls.lock().unwrap().get(&channel_id).map(Call::audience);
+        match audience {
+            Some(users) => self.emit(ev.for_users(users)),
+            None => self.emit(ev),
+        }
+    }
+
+    /// The last person out ends a private call (and its invitations).
+    pub fn end_call_if_empty(&self, channel_id: i64) {
+        if !self.in_voice(channel_id).is_empty() {
+            return;
+        }
+        let ended = self.calls.lock().unwrap().remove(&channel_id);
+        if let Some(call) = ended {
+            self.emit(Event::new("call_end", serde_json::json!({ "channel_id": channel_id.to_string() })).for_users(call.audience()));
+        }
+    }
+
+    /// People in voice in `channel_id`.
+    pub fn in_voice(&self, channel_id: i64) -> Vec<i64> {
+        self.voice.lock().unwrap().iter().filter(|(_, s)| s.channel_id == channel_id).map(|(u, _)| *u).collect()
     }
 
     /// Removes the user's voice state if `session` still owns it, and tells everyone.
@@ -174,7 +221,11 @@ impl ServerCtx {
             }
         };
         if let Some(s) = removed {
-            self.emit(Event::new("voice_state_update", serde_json::json!({ "user_id": user_id.to_string(), "channel_id": null, "previous_channel_id": s.channel_id.to_string() })));
+            self.emit_voice(
+                s.channel_id,
+                Event::new("voice_state_update", serde_json::json!({ "user_id": user_id.to_string(), "channel_id": null, "previous_channel_id": s.channel_id.to_string() })),
+            );
+            self.end_call_if_empty(s.channel_id);
         }
     }
 

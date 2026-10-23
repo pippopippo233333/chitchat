@@ -33,6 +33,29 @@ struct Limits {
     ai_unit: String,
     /// Where the AI's model files are (only measured, for the dashboard).
     ai_model_dir: Option<PathBuf>,
+    /// Private calls (voice in direct messages), for every server on this host.
+    #[serde(default)]
+    calls: CallLimits,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy)]
+pub struct CallLimits {
+    pub enabled: bool,
+    /// Calls going on at once, per server.
+    pub max_calls: u32,
+    /// People in one call, including the caller.
+    pub max_people: u32,
+}
+
+impl Default for CallLimits {
+    fn default() -> Self {
+        CallLimits { enabled: true, max_calls: 5, max_people: 4 }
+    }
+}
+
+/// The host admin's private-call settings (defaults until the host has started measuring).
+pub fn call_limits() -> CallLimits {
+    STATE.get().map(|s| s.limits.lock().unwrap().calls).unwrap_or_default()
 }
 
 fn default_ai_unit() -> String {
@@ -300,6 +323,7 @@ async fn out(state: &State) -> Value {
         },
         "disk": { "total_bytes": disk_total, "free_bytes": disk_free },
         "ai_disk_bytes": ai_disk,
+        "calls": limits.calls,
     })
 }
 
@@ -320,6 +344,7 @@ pub struct PatchReq {
     ai_cores: Option<Option<f64>>,
     #[serde(default, deserialize_with = "super::ai::present")]
     ai_ram_mb: Option<Option<u64>>,
+    calls: Option<CallLimits>,
 }
 
 /// `PATCH /host/resources`
@@ -354,6 +379,15 @@ pub async fn patch(auth: Auth, Body(req): Body<PatchReq>) -> ApiResult<Json<Valu
                 return Err(bad("ai_ram_mb"));
             }
             l.ai_ram_mb = m;
+        }
+        if let Some(c) = req.calls {
+            if !(1..=100).contains(&c.max_calls) {
+                return Err(bad("max_calls"));
+            }
+            if !(2..=25).contains(&c.max_people) {
+                return Err(bad("max_people"));
+            }
+            l.calls = c;
         }
         l.clone()
     };

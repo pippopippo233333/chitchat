@@ -176,6 +176,36 @@ async fn wants(srv: &ServerCtx, ch: &ChannelRow, msg: &MessageOut, user: i64, no
     }
 }
 
+/// An incoming call: an urgent push to each of `users` who isn't watching ChitChat (they get the
+/// ring over the WebSocket then). In the background.
+pub fn call_ring(srv: Arc<ServerCtx>, users: Vec<i64>, caller: String, channel_id: i64) {
+    tokio::spawn(async move {
+        for user in users {
+            if srv.is_watching(user) {
+                continue;
+            }
+            let subs: Vec<(String, String, String)> =
+                match sqlx::query_as("SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?").bind(user).fetch_all(&srv.db).await {
+                    Ok(s) => s,
+                    Err(e) => return tracing::warn!(server = %srv.slug, "call push: {e}"),
+                };
+            let payload = json!({
+                "title": format!("{caller} is calling you"),
+                "body": "Open ChitChat to answer.",
+                "slug": srv.slug,
+                "channel_id": channel_id.to_string(),
+                "tag": format!("{}:call:{channel_id}", srv.slug),
+            })
+            .to_string();
+            for (endpoint, p256dh, key) in subs {
+                if let Outcome::Gone = push::send(&endpoint, &p256dh, &key, payload.as_bytes(), &format!("call{channel_id}"), true).await {
+                    let _ = forget(&srv, &endpoint).await;
+                }
+            }
+        }
+    });
+}
+
 /// Sends pushes for a new message (in the background; never delays sending the message).
 pub fn message_created(srv: Arc<ServerCtx>, ch: ChannelRow, msg: MessageOut) {
     tokio::spawn(async move {

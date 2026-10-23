@@ -7,7 +7,8 @@
  $: custom=extra.flatMap(group=>group.items);
  $: groups=[{name:'Recently used',items:recent.filter(emoji=>!emoji.startsWith('custom:')||custom.some(item=>item.emoji===emoji)).map(emoji=>custom.find(item=>item.emoji===emoji)??{emoji,words:''})},...extra,...EMOJI_GROUPS];
  $: found=[...custom.filter(item=>query.trim()&&query.toLowerCase().split(/\s+/).filter(Boolean).every(word=>item.words.toLowerCase().includes(word))),...searchEmoji(query)];
- function pick(emoji:string){recent=rememberEmoji(emoji);onPick(emoji);onClose();}
+ // Stays open so several can be picked; "Recently used" updates next time it opens (no jumping grid).
+ function pick(emoji:string){rememberEmoji(emoji);onPick(emoji);}
  function place(){
   const box=anchor.getBoundingClientRect(),width=root.offsetWidth,height=root.offsetHeight,gap=6;
   left=Math.max(8,Math.min(box.right-width,innerWidth-width-8));

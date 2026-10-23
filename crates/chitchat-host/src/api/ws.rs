@@ -42,6 +42,11 @@ pub async fn handler(Srv(srv): Srv, ConnectInfo(addr): ConnectInfo<SocketAddr>, 
     ws.max_message_size(64 * 1024).on_upgrade(move |socket| run(socket, srv, addr.ip(), host))
 }
 
+/// A failed `call_decline`/`call_invite`: unlike `voice_end`, the caller stays in their call.
+async fn send_call_error(socket: &mut WebSocket, (reason, message): VoiceError) -> bool {
+    socket.send(Message::Text(frame("call_error", json!({ "reason": reason, "message": message })).into())).await.is_ok()
+}
+
 async fn send_voice_end(socket: &mut WebSocket, (reason, message): VoiceError) -> bool {
     socket.send(Message::Text(frame("voice_end", json!({ "reason": reason, "message": message })).into())).await.is_ok()
 }
@@ -121,9 +126,9 @@ async fn run(mut socket: WebSocket, srv: Arc<ServerCtx>, ip: IpAddr, host: Optio
                                 visible = v;
                                 srv.set_watching(user_id, v);
                             }
-                        } else if f.ty.starts_with("voice_")
+                        } else if (f.ty.starts_with("voice_") || f.ty.starts_with("call_"))
                             && let Err(e) = voice_api::handle(&srv, &auth, &mut vc, &f.ty, &f.data).await
-                                && !send_voice_end(&mut socket, e).await {
+                                && !(if f.ty.starts_with("call_") { send_call_error(&mut socket, e).await } else { send_voice_end(&mut socket, e).await }) {
                                     break;
                                 }
                     }
