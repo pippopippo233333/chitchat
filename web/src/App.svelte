@@ -11,6 +11,7 @@
   import { memberPresence } from './lib/profile';
   import RichComposer from './RichComposer.svelte';
   import IncomingCall from './IncomingCall.svelte';
+  import AttachmentDownload from './AttachmentDownload.svelte';
   import { addRing, callRoom, liveRings, ongoingCalls, RING_SECONDS, type Ring } from './lib/calls';
   import { emojiGroups, customReaction, customToken, reactionName } from './lib/custom-emoji';
   import type { User, CustomEmoji } from './lib/api';
@@ -748,7 +749,7 @@
       {:else if modal === 'admin' && snapshot}<AdminPanel {api} {snapshot} onCreated={createdServer} onOpen={server=>{void chooseServer(server);}} onError={scopedError(api)}/>
       {:else if modal === 'ai-review' && snapshot && can(snapshot.permissions, 2, snapshot.is_owner)}<h2 id="dialog-title">AI review queue</h2><AiReview {api} {snapshot} latest={latestAiFlag} onUpdate={updateAiFlag} onMember={member => { selectedMember = member; modal = 'member'; }}/>
       {:else if modal === 'member' && snapshot && selectedMember}<MemberControls {api} {snapshot} member={selectedMember} onDirect={openDirect} onError={scopedError(api)} onClose={memberClose(selectedMember, api)}/>
-      {:else if modal === 'media' && viewedAttachment}<h2 id="dialog-title">{viewedAttachment.filename}</h2>{#if viewedAttachment.kind === 'image'}<img class="lightbox-image" src={mediaUrl(viewedAttachment.url, origin)} alt={viewedAttachment.filename}/>{:else}<video class="lightbox-image" controls src={mediaUrl(viewedAttachment.url, origin)}><track kind="captions"/></video>{/if}<p class="small muted">If the media has expired, reopen the channel for a fresh link.</p>
+      {:else if modal === 'media' && viewedAttachment}<h2 id="dialog-title">{viewedAttachment.filename}</h2>{#if viewedAttachment.kind === 'image'}<img class="lightbox-image" src={mediaUrl(viewedAttachment.url, origin)} alt={viewedAttachment.filename}/>{:else}<video class="lightbox-image" controls src={mediaUrl(viewedAttachment.url, origin)}><track kind="captions"/></video>{/if}<div class="button-row lightbox-actions"><AttachmentDownload src={mediaUrl(viewedAttachment.url, origin)} filename={viewedAttachment.filename}/></div><p class="small muted">If the media has expired, reopen the channel for a fresh link.</p>
       {:else if modal === 'channel-settings' && channelSettings}
         <h2 id="dialog-title">Channel settings</h2>
         <form onsubmit={saveChannel}>
