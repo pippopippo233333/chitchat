@@ -26,7 +26,7 @@ pub async fn list(State(host): State<Arc<Host>>, auth: Auth) -> ApiResult<Json<V
     let mut out = Vec::new();
     for s in servers {
         let row = db::server_row(&s.db).await?;
-        let members: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users").fetch_one(&s.db).await?;
+        let members: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE kicked = 0").fetch_one(&s.db).await?;
         let mut v = serde_json::to_value(ServerSummary::new(&s.slug, &row)).map_err(|_| ApiError::internal())?;
         v["listed"] = json!(row.listed);
         v["has_owner"] = json!(row.owner_id.is_some());

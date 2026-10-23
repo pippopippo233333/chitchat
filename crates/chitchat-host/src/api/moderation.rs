@@ -252,10 +252,9 @@ pub async fn kick(auth: Auth, Path(p): Path<UserPath>, Body(req): Body<ReasonReq
     let reason = clean_reason(req.reason)?;
     sqlx::query("DELETE FROM sessions WHERE user_id = ?").bind(target.id).execute(&auth.srv.db).await?;
     sqlx::query("DELETE FROM member_roles WHERE user_id = ?").bind(target.id).execute(&auth.srv.db).await?;
+    sqlx::query("UPDATE users SET kicked = 1 WHERE id = ?").bind(target.id).execute(&auth.srv.db).await?;
     kick_out(&auth.srv, target.id, "kicked", &if reason.is_empty() { "You were kicked.".to_string() } else { format!("You were kicked: {reason}") });
-    if let Some(m) = db::member(&auth.srv, target.id).await? {
-        auth.srv.emit(Event::new("member_update", m).refresh());
-    }
+    auth.srv.emit(Event::new("member_leave", json!({ "user_id": target.id.to_string() })));
     audit(&auth.srv, Some(auth.user.id), "member_kick", Some(target.id), json!({ "reason": reason })).await;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -381,7 +381,7 @@ async fn local_servers(host: &Host) -> Vec<RemoteServer> {
         if !row.discoverable {
             continue;
         }
-        let members: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users").fetch_one(&s.db).await.unwrap_or(0);
+        let members: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE kicked = 0").fetch_one(&s.db).await.unwrap_or(0);
         out.push(RemoteServer {
             slug: s.slug.clone(),
             name: row.name,

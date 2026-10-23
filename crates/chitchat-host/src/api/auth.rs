@@ -255,6 +255,12 @@ pub async fn login(Srv(srv): Srv, ConnectInfo(addr): ConnectInfo<SocketAddr>, Bo
         super::moderation::check_join(&srv, addr.ip(), &device_id).await?;
     }
     let token = create_session(&srv, user.id, &device_id, addr).await?;
+    // Logging in after a kick rejoins the server.
+    if sqlx::query("UPDATE users SET kicked = 0 WHERE id = ? AND kicked = 1").bind(user.id).execute(&srv.db).await?.rows_affected() > 0
+        && let Some(m) = db::member(&srv, user.id).await?
+    {
+        srv.emit(Event::new("member_join", m));
+    }
     Ok(Json(json!({ "token": token, "user": UserOut::from(&user) })))
 }
 

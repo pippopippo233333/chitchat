@@ -295,7 +295,7 @@
     const token=readSession(origin,api.slug);if(token){api.token=token;error='';startConnection();}
   }
   function sessionStorageChanged(event:StorageEvent){if(event.key==='chitchat.notifications'||event.key===null)deviceNotifications=loadDeviceNotifications();if(event.key===null||event.key===sessionKey(origin,api.slug))restoreSavedSession();}
-  function expire(reason: string) { clearSession(origin, api.slug); clearContext(); modal = 'auth'; error = reason; }
+  function expire(reason: string) { clearSession(origin, api.slug); clearContext(); api = new Api(origin, api.slug); mode = 'login'; modal = 'auth'; error = reason; }
   async function discover(address = origin) {
     busy = true; error = '';
     try {

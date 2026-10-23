@@ -301,6 +301,11 @@ CREATE TABLE custom_emojis (
 );
 "#;
 
+/// Kicked accounts leave the member list until they log in again.
+const SCHEMA_V15: &str = r#"
+ALTER TABLE users ADD COLUMN kicked INTEGER NOT NULL DEFAULT 0;
+"#;
+
 /// Shown in the network-wide server browser (discovery.rs), opt-in.
 const SCHEMA_V8: &str = r#"
 ALTER TABLE server ADD COLUMN discoverable INTEGER NOT NULL DEFAULT 0;
@@ -433,6 +438,12 @@ async fn migrate(pool: &SqlitePool) -> Result<()> {
         let mut tx = pool.begin().await?;
         sqlx::raw_sql(SCHEMA_V14).execute(&mut *tx).await?;
         sqlx::raw_sql("PRAGMA user_version = 14").execute(&mut *tx).await?;
+        tx.commit().await?;
+    }
+    if version < 15 {
+        let mut tx = pool.begin().await?;
+        sqlx::raw_sql(SCHEMA_V15).execute(&mut *tx).await?;
+        sqlx::raw_sql("PRAGMA user_version = 15").execute(&mut *tx).await?;
         tx.commit().await?;
     }
     Ok(())
@@ -642,9 +653,9 @@ fn member_out(srv: &ServerCtx, u: &UserRow, roles: &mut HashMap<i64, Vec<String>
 
 pub async fn list_members(srv: &ServerCtx) -> sqlx::Result<Vec<MemberOut>> {
     let owner = server_row(&srv.db).await?.owner_id;
-    // Banned accounts aren't members while the ban lasts.
+    // Banned accounts aren't members while the ban lasts; kicked ones until they log in again.
     let users: Vec<UserRow> = sqlx::query_as(
-        "SELECT * FROM users WHERE id NOT IN (SELECT user_id FROM bans WHERE user_id IS NOT NULL \
+        "SELECT * FROM users WHERE kicked = 0 AND id NOT IN (SELECT user_id FROM bans WHERE user_id IS NOT NULL \
          AND (expires_at IS NULL OR expires_at > ?)) ORDER BY id",
     )
     .bind(now_ms())

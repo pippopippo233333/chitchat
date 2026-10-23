@@ -369,7 +369,7 @@ Ban = { "id": "…", "user": User | null, "reason": "spam", "ip_banned": true, "
 |---|---|---|
 | `PUT /members/{user_id}/timeout` | `{ minutes: 1–40320, reason? }` → `204` | KICK_MEMBERS |
 | `DELETE /members/{user_id}/timeout` | → `204` (also clears automatic spam timeouts) | KICK_MEMBERS |
-| `POST /members/{user_id}/kick` | `{ reason? }` → `204`: logs them out everywhere and removes their roles (sockets close `4003` with error `kicked`). They can log back in; use a ban to keep someone out. | KICK_MEMBERS |
+| `POST /members/{user_id}/kick` | `{ reason? }` → `204`: logs them out everywhere, removes their roles and hides them from `/members` (a `member_leave` event is sent; sockets close `4003` with error `kicked`). Logging back in rejoins them (`member_join`); use a ban to keep someone out. | KICK_MEMBERS |
 
 - `Member.timed_out_until` is a timestamp while timed out (else null); a `member_update` is sent on change.
 - Timed-out members get `403 timed_out { until }` on sending, editing, reacting and uploading.
