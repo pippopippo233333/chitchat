@@ -46,6 +46,10 @@ impl Auth {
     pub fn require(&self, wanted: u64) -> ApiResult<()> {
         if perms::has(self.perms, wanted) { Ok(()) } else { Err(ApiError::missing_permission()) }
     }
+    pub async fn require_in(&self, channel: &crate::models::ChannelRow, wanted: u64) -> ApiResult<()> {
+        let effective = crate::db::channel_perms(&self.srv.db, self.user.id, self.perms, channel).await?;
+        if perms::has(effective, wanted) { Ok(()) } else { Err(ApiError::missing_permission()) }
+    }
 }
 
 impl FromRequestParts<Arc<Host>> for Auth {

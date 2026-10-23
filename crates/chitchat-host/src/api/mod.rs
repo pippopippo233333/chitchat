@@ -5,14 +5,17 @@ pub(crate) mod ai;
 mod auth;
 mod backups;
 mod channels;
+mod conversations;
 mod discovery;
 mod dms;
+mod emoji;
 mod error;
 mod extract;
 mod files;
 mod messages;
 pub(crate) mod moderation;
 mod notify;
+mod profile;
 mod push;
 mod resources;
 mod roles;
@@ -20,6 +23,7 @@ mod search;
 mod server;
 mod servers;
 mod storage;
+mod update;
 mod voice;
 mod ws;
 
@@ -50,11 +54,20 @@ pub fn router(host: Arc<Host>, web_dir: &Path) -> Router {
         .route("/auth/login", post(auth::login))
         .route("/auth/logout", post(auth::logout))
         .route("/me", get(auth::me).patch(auth::patch_me))
+        .route("/me/avatar", put(profile::upload_avatar).delete(profile::delete_avatar))
+        .route("/emojis", get(emoji::list).post(emoji::create))
+        .route("/emojis/{id}", axum::routing::delete(emoji::delete))
+        .route("/emojis/{id}/{name}", get(emoji::image))
+        .route("/avatars/{user_id}/{name}", get(profile::avatar))
         .route("/categories", get(server::categories).post(channels::create_category))
         .route("/categories/{id}", patch(channels::patch_category).delete(channels::delete_category))
         .route("/channels", get(server::channels).post(channels::create_channel))
         .route("/channels/{id}", patch(channels::patch_channel).delete(channels::delete_channel))
         .route("/channels/{id}/messages", get(messages::list).post(messages::create))
+        .route("/channels/{id}/pins", get(conversations::pins))
+        .route("/channels/{id}/pins/{mid}", put(conversations::pin).delete(conversations::unpin))
+        .route("/channels/{id}/threads", get(conversations::threads))
+        .route("/channels/{id}/messages/{mid}/thread", post(conversations::create_thread))
         .route("/channels/{id}/ack", post(notify::ack))
         .route("/read-states", get(notify::read_states))
         .route("/me/preferences", get(notify::get_preferences).patch(notify::patch_preferences))
@@ -62,6 +75,9 @@ pub fn router(host: Arc<Host>, web_dir: &Path) -> Router {
         .route("/search", get(search::search))
         .route("/push/key", get(push::key))
         .route("/push/subscription", put(push::subscribe).delete(push::unsubscribe))
+        .route("/push/test", post(push::test))
+        .route("/channels/{id}/permissions", get(conversations::permissions))
+        .route("/channels/{id}/permissions/{role_id}", put(conversations::set_permission).delete(conversations::clear_permission))
         .route("/channels/{id}/messages/{mid}", patch(messages::edit).delete(messages::delete))
         .route("/channels/{id}/messages/{mid}/reactions/{emoji}", put(messages::react).delete(messages::unreact))
         .route("/members", get(server::members))
@@ -82,6 +98,7 @@ pub fn router(host: Arc<Host>, web_dir: &Path) -> Router {
         .route("/storage", get(storage::get))
         .route("/host/resources", get(resources::get).patch(resources::patch))
         .route("/host/backups", get(backups::get).post(backups::run))
+        .route("/host/update", get(update::get).post(update::apply))
         .route("/host/servers", get(servers::list).post(servers::create))
         .route("/host/discovery", get(discovery::get_settings).patch(discovery::patch_settings))
         .route("/bans", get(moderation::list_bans).post(moderation::ban))
@@ -131,6 +148,15 @@ pub fn router(host: Arc<Host>, web_dir: &Path) -> Router {
 
 async fn not_found() -> ApiError {
     ApiError::not_found("not_found", "No such endpoint.")
+}
+
+/// Install only on a TLS listener: browsers remember to use HTTPS for this host.
+/// Do not include subdomains: a host can live beneath a shared DNS provider.
+pub fn with_transport_security(app: Router) -> Router {
+    app.layer(axum::middleware::map_response(|mut response: axum::response::Response| async move {
+        response.headers_mut().insert(axum::http::header::STRICT_TRANSPORT_SECURITY, axum::http::HeaderValue::from_static("max-age=31536000"));
+        response
+    }))
 }
 
 /// Sends page loads that use the canonical domain with another port (e.g. `:8090` instead of

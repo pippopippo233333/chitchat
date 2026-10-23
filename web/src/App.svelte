@@ -1,11 +1,22 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from 'svelte';
   import Icon from './Icon.svelte';
-  import Appearance from './Appearance.svelte';import{isDesktopApp,desktopNotify}from'./lib/desktop';import{applyTheme,loadTheme,storeTheme}from'./lib/theme';
+  import Avatar from './Avatar.svelte';
+  import ProfileSettings from './ProfileSettings.svelte';
+  import PinsPanel from './PinsPanel.svelte';
+  import ThreadList from './ThreadList.svelte';
+  import ChannelPermissions from './ChannelPermissions.svelte';
+  import CustomEmojiSettings from './CustomEmojiSettings.svelte';
+  import EmojiGlyph from './EmojiGlyph.svelte';
+  import { memberPresence } from './lib/profile';
+  import { emojiGroups, customReaction, customToken, reactionName } from './lib/custom-emoji';
+  import type { User, CustomEmoji } from './lib/api';
+  import Appearance from './Appearance.svelte';import{isDesktopApp,desktopNotify,onDesktopNotificationClick}from'./lib/desktop';import{applyTheme,loadTheme,storeTheme}from'./lib/theme';
   import{prepareNotifications,knownNotificationTarget,enablePush,disablePush,type NotificationTarget}from'./lib/desktop-notifications';
   import SearchPanel from './SearchPanel.svelte';
   import NotificationSettings from './NotificationSettings.svelte';
   import MentionMenu from './MentionMenu.svelte';
+  import EmojiPicker from './EmojiPicker.svelte';
   import{defaultPreferences,newer,unread,mentioned,shouldNotify,received,acknowledged,readUpdate,mergeReads,mentionParts,loadDeviceNotifications,storeDeviceNotifications,type DeviceNotifications}from'./lib/social';
   import MessageText from './MessageText.svelte';
   import AiReview from './AiReview.svelte';
@@ -57,7 +68,7 @@
   const voiceAvailable = secureVoiceAvailable();
   const channelViews = new Map<string, { messages: Message[]; hasOlder: boolean; scrollTop: number; atBottom: boolean }>();
   let status: ConnectionStatus = 'offline';
-  let modal: 'host' | 'servers' | 'auth' | 'channel' | 'delete' | 'link' | 'admin' | 'member' | 'channel-settings' | 'media' | 'ai-review' | 'browse' | 'saved' | 'host-create' | 'search' | 'notifications' | 'dm-picker' | 'appearance' | null = 'servers';
+  let modal: 'host' | 'servers' | 'auth' | 'channel' | 'delete' | 'link' | 'admin' | 'member' | 'channel-settings' | 'media' | 'ai-review' | 'browse' | 'saved' | 'host-create' | 'search' | 'notifications' | 'dm-picker' | 'appearance' | 'profile' | 'pins' | 'threads' | 'channel-permissions' | 'server-emojis' | null = 'servers';
   let hubHostServers:HostServer[]|null=null;
   async function openServerHub(){error='';modal='saved';hubHostServers=null;const currentApi=api;if(!snapshot)return;try{const servers=await currentApi.request<HostServer[]>('/host/servers');if(api===currentApi)hubHostServers=servers;}catch{/* Host tools are shown only after the host confirms administrator access. */}}
   let aiFlags: AiFlag[] = [], latestAiFlag: AiFlag | null = null, aiMore = false, aiLoading = false;
@@ -86,7 +97,7 @@
   let hasOlder = false;
   let activeId = '';
   let dms:DirectMessage[]=[],readStates:ReadState[]=[],preferences=defaultPreferences(),deviceNotifications=loadDeviceNotifications();
-  let pendingNotificationTarget:NotificationTarget|null=null;
+  let pendingNotificationTarget:NotificationTarget|null=null,stopDesktopClicks=()=>{};
   let preferencesLoaded=false;let dmQuery='';let socialError='',socialLoading=false,socialAbort:AbortController|undefined,preferenceVersion=0;
   let viewingHistory=false,jumpId='',mentionCursor=0,mentionMenu:MentionMenu;
   const appAbort=new AbortController();let appAlive=true;const railReads=new Map<string,{token:string;rows:ReadState[]}>();
@@ -98,6 +109,12 @@
   let draft = '';
   let reply: Message | null = null;
   let deleting: Message | null = null;
+  let reacting: { message: Message; anchor: HTMLElement } | null = null;
+  let composeEmojiAnchor: HTMLElement | null = null;
+  let pinsPanel: PinsPanel;
+  $: customEmojiGroups = emojiGroups(snapshot?.emojis ?? [], origin);
+  $: activeParent = snapshot?.channels.find(channel => channel.id === active?.parent_id);
+  $: selfMember = snapshot?.members.find(member => member.user.id === snapshot?.user.id);
   let editing: Message | null = null;
   let editText = '';
   let sending = false;
@@ -105,6 +122,7 @@
   let historyAbort: AbortController | undefined;
   let historyVersion = 0;
   let contextVersion = 0;
+  let permissionRefreshVersion = 0;
   let liveChanges = new Map<string, Message | null>();
   let ownReactionEvents = new Map<string, Map<string, boolean>>();
   let cooldownUntil = 0, mutedUntil = 0;
@@ -129,10 +147,10 @@
   $: currentBadge={unread:readStates.some(unread),mentions:readStates.reduce((sum,row)=>sum+row.mention_count,0)};
   $: sortedDms=[...dms].sort((a,b)=>newer(a.last_message_id,b.last_message_id)?-1:newer(b.last_message_id,a.last_message_id)?1:a.user.display_name.localeCompare(b.user.display_name));
   $: categories = [...(snapshot?.categories ?? [])].sort((a, b) => a.position - b.position);
-  $: channels = [...(snapshot?.channels ?? [])].sort((a, b) => a.position - b.position);
+  $: channels = [...(snapshot?.channels ?? [])].filter(channel => !channel.parent_id).sort((a, b) => a.position - b.position);
   $: onlineMembers = snapshot?.members.filter(member => member.online) ?? [];
   $: sortedMembers = [...(snapshot?.members ?? [])].sort((a, b) => Number(b.online) - Number(a.online) || a.user.display_name.localeCompare(b.user.display_name));
-  $: sendAllowed = !!active && active.type !== 'voice' && (active.type==='dm'?can(snapshot?.permissions,16,snapshot?.is_owner):can(active.my_permissions,1,snapshot?.is_owner));
+  $: sendAllowed = !!active && active.type !== 'voice' && !active.archived && (active.type==='dm'?can(snapshot?.permissions,16,snapshot?.is_owner):can(active.my_permissions,1,snapshot?.is_owner));
   $: draftLimits = contentLimits(draft, attachments.length);
   $: cooldownSeconds = Math.max(0, Math.ceil((cooldownUntil - now) / 1000));
   $: muted = mutedUntil > now;
@@ -144,6 +162,49 @@
   $: if (snapshot) voice.setCapabilities(can(snapshot.permissions, 13, snapshot.is_owner), can(snapshot.permissions, 14, snapshot.is_owner), muted || !!voiceStates.find(item => item.user_id === snapshot?.user.id)?.suppressed);
   $: typingNames = snapshot?.members.filter(member => typing[member.user.id] > now && member.user.id !== snapshot?.user.id).map(member => member.user.display_name) ?? [];
 
+  function profileSaved(user: User) {
+    if (!snapshot) return;
+    snapshot = { ...snapshot, user: snapshot.user.id === user.id ? user : snapshot.user, members: snapshot.members.map(member => member.user.id === user.id ? { ...member, user } : member) };
+    const update = (message: Message) => message.author.id === user.id ? { ...message, author: { ...message.author, ...user } } : message;
+    messages = messages.map(update);
+    for (const view of channelViews.values()) view.messages = view.messages.map(update);
+    dms = dms.map(dm => dm.user.id === user.id ? { ...dm, user } : dm);
+  }
+  function updatePin(id: string, pinned: boolean, channelId: string) {
+    const update = (message: Message) => message.id === id ? { ...message, pinned } : message;
+    if (channelId === activeId) { messages = messages.map(update); const changed = messages.find(message => message.id === id); if (changed) liveChanges.set(id, changed); }
+    const view = channelViews.get(channelId); if (view) view.messages = view.messages.map(update);
+    if (modal === 'pins' && channelId === activeId) void pinsPanel?.refresh();
+  }
+  async function togglePin(message: Message) {
+    if (actionBusy) return; actionBusy = true;
+    const currentApi = api, pinned = !message.pinned;
+    try { await currentApi.request(`/channels/${message.channel_id}/pins/${message.id}`, pinned ? 'PUT' : 'DELETE'); if (api === currentApi) updatePin(message.id, pinned, message.channel_id); }
+    catch (cause) { if (api === currentApi) handleError(cause); }
+    finally { actionBusy = false; }
+  }
+  async function startThread(message: Message) {
+    if (!snapshot || actionBusy) return;
+    const existing = snapshot.channels.find(channel => channel.id === message.thread_id);
+    if (existing) { await openChannel(existing); return; }
+    actionBusy = true; const currentApi = api;
+    try { const thread = await currentApi.request<Channel>(`/channels/${message.channel_id}/messages/${message.id}/thread`, 'POST', {}); if (api === currentApi && snapshot) { snapshot = { ...snapshot, channels: upsert(snapshot.channels, thread) }; await openChannel(thread); } }
+    catch (cause) { if (api === currentApi) handleError(cause); }
+    finally { actionBusy = false; }
+  }
+  async function jumpThreadRoot() {
+    if (!active?.root_message_id || !active.parent_id) return;
+    const currentApi = api, root = active.root_message_id, parent = active.parent_id;
+    try { const rows = await currentApi.request<Message[]>(`/channels/${parent}/messages?around=${root}&limit=1`); if (api !== currentApi) return; const starter = rows.find(message => message.id === root); if (starter) await jumpToMessage(starter); else notify('The thread starter was removed.'); }
+    catch (cause) { if (api === currentApi) handleError(cause); }
+  }
+  async function composeEmoji(value: string) {
+    const custom = snapshot?.emojis?.find(emoji => customReaction(emoji) === value);
+    const text = custom ? customToken(custom) : value;
+    const start = composer?.selectionStart ?? draft.length, end = composer?.selectionEnd ?? start;
+    draft = draft.slice(0, start) + text + draft.slice(end); mentionCursor = start + text.length;
+    await tick(); composer?.focus(); composer?.setSelectionRange(mentionCursor, mentionCursor);
+  }
   function dmChannel(dm:DirectMessage):Channel{return{id:dm.id,type:'dm',name:dm.user.display_name,topic:'Direct message',position:0,category_id:null,media_allowed:dm.media_allowed??true,my_permissions:dm.my_permissions??snapshot?.permissions??'0'};}
   function stateFor(id:string,states=readStates){return states.find(row=>row.channel_id===id);}
   function selfRoles(){const member=snapshot?.members.find(m=>m.user.id===snapshot?.user.id);return snapshot?.roles.filter(r=>r.is_default||member?.role_ids.includes(r.id)).map(r=>r.id)??[];}
@@ -157,7 +218,7 @@
   function refreshReadCounts(){clearTimeout(readRefreshTimer);const target=api;readRefreshTimer=setTimeout(async()=>{const before=readStates;try{const rows=await target.request<ReadState[]>('/read-states','GET',undefined,socialAbort?.signal);if(target===api)readStates=readStates===before?rows:mergeReads(readStates,rows);}catch{/* Visible channel activity or the next metadata refresh retries. */}},500);}
   function readVisibility(){if(document.visibilityState==='visible'){scheduleAck();if(snapshot&&!socialLoading)void loadSocial();}}
   function playNotification(){if(!deviceNotifications.sound||!deviceNotifications.volume)return;soundAudio??=new Audio('/sounds/notification.mp3');soundAudio.volume=deviceNotifications.volume/100;soundAudio.currentTime=0;void soundAudio.play().catch(()=>{if(!soundBlocked){soundBlocked=true;notify('Notification sound was blocked. Open Notifications and use Test sound to enable it.');}});}
-  async function desktopNotice(title:string,body:string,tag:string,target:NotificationTarget){if(isDesktopApp){if(deviceNotifications.desktop&&(document.visibilityState==='hidden'||!document.hasFocus()))try{await desktopNotify(title,body);}catch{/* The app refused (another page); nothing to show. */}return;}if(!deviceNotifications.desktop||document.visibilityState!=='hidden'||typeof Notification==='undefined'||Notification.permission!=='granted')return;try{const registration=await prepareNotifications();if(!deviceNotifications.desktop||document.visibilityState!=='hidden')return;if(registration){await registration.showNotification(title,{body,tag,silent:true,data:target});}else{const notice=new Notification(title,{body,tag,silent:true});notice.onclick=()=>{notice.close();window.focus();void activateNotification(target);};}}catch{notify('Browser notifications could not be displayed. Check notification settings.');}}
+  async function desktopNotice(title:string,body:string,tag:string,target:NotificationTarget){if(isDesktopApp){if(deviceNotifications.desktop&&(document.visibilityState==='hidden'||!document.hasFocus()))try{await desktopNotify(title,body,target,deviceNotifications.closed);}catch{/* The app refused (another page); nothing to show. */}return;}if(!deviceNotifications.desktop||document.visibilityState!=='hidden'||typeof Notification==='undefined'||Notification.permission!=='granted')return;try{const registration=await prepareNotifications();if(!deviceNotifications.desktop||document.visibilityState!=='hidden')return;if(registration){await registration.showNotification(title,{body,tag,silent:true,data:target});}else{const notice=new Notification(title,{body,tag,silent:true});notice.onclick=()=>{notice.close();window.focus();void activateNotification(target);};}}catch{notify('Browser notifications could not be displayed. Check notification settings.');}}
   async function activateNotification(value:unknown){const target=knownNotificationTarget(value,savedServers);if(!target)return;if(target.origin===origin&&target.slug===api.slug&&snapshot){modal=null;if(target.channel_id){let channel=snapshot.channels.find(c=>c.id===target.channel_id)??(dms.find(d=>d.id===target.channel_id)?dmChannel(dms.find(d=>d.id===target.channel_id)!):undefined);if(!channel){await loadSocial();channel=dms.find(d=>d.id===target.channel_id)?dmChannel(dms.find(d=>d.id===target.channel_id)!):undefined;}if(channel)await openChannel(channel);}}else{pendingNotificationTarget=target;await connectTarget(target);}}
   function notificationClick(event:MessageEvent){if(event.data?.type==='notification_click')void activateNotification(event.data.target);}
 
@@ -195,6 +256,7 @@
   let aiLiveUpdates = new Map<string, AiFlag>();
   function updateAiFlag(flag: AiFlag) { aiLiveUpdates.set(flag.id, flag); latestAiFlag = flag; aiFlags = mergeFlags(aiFlags, [flag], 'open'); }
   function clearContext() {
+    reacting = null; composeEmojiAnchor = null;
     hubHostServers=null;socialAbort?.abort();dms=[];readStates=[];preferences=defaultPreferences();preferencesLoaded=false;socialError='';socialLoading=false;viewingHistory=false;jumpId='';clearTimeout(ackTimer);clearTimeout(readRefreshTimer);ackInFlight.clear();notifiedIds.clear();
     aiRefreshVersion++; aiFlags = []; latestAiFlag = null; aiMore = false; aiLoading = false; aiLiveUpdates.clear();
     voice.leave(); voiceStates = []; voiceSpeaking = {}; channelViews.clear();
@@ -302,6 +364,9 @@
       return;
     }
     if (!snapshot) return;
+    if (event.type === 'emoji_create') { snapshot = { ...snapshot, emojis: upsert(snapshot.emojis ?? [], data as CustomEmoji) }; return; }
+    if (event.type === 'emoji_delete') { snapshot = { ...snapshot, emojis: (snapshot.emojis ?? []).filter(emoji => emoji.id !== data.id) }; return; }
+    if (event.type === 'pin_update') { updatePin(data.message_id, data.pinned, data.channel_id); return; }
     if (event.type === 'ai_notice_update') { snapshot = { ...snapshot, ai_moderation: data.ai_moderation }; return; }
     if (event.type === 'ai_flag_create' || event.type === 'ai_flag_update') { if (can(snapshot.permissions, 2, snapshot.is_owner)) updateAiFlag(data as AiFlag); return; }
     if (event.type === 'voice_sdp') { void voice.handleSdp(data); return; }
@@ -338,8 +403,8 @@
       messages = messages.map(message => message.id !== data.message_id ? message : { ...message, reactions: updateReaction(message.reactions, data.emoji, data.user_id === snapshot!.user.id, event.type === 'reaction_add') });
       const changed = messages.find(message => message.id === data.message_id); if (changed) liveChanges.set(changed.id, changed);
     } else if (event.type === 'typing_start' && data.channel_id === activeId) { typing = { ...typing, [data.user_id]: Date.now() + 8000 }; }
-    else if (event.type === 'presence_update') { snapshot.members = snapshot.members.map(member => member.user.id === data.user_id ? { ...member, online: data.online } : member); }
-    else if (event.type === 'member_join' || event.type === 'member_update') { snapshot.members = [...snapshot.members.filter(member => member.user.id !== data.user.id), data as Member]; if (selectedMember?.user.id === data.user.id) selectedMember = data; }
+    else if (event.type === 'presence_update') { snapshot.members = snapshot.members.map(member => member.user.id === data.user_id ? { ...member, online: data.online, status: data.status ?? (data.online ? 'online' : 'offline') } : member); }
+    else if (event.type === 'member_join' || event.type === 'member_update') { snapshot.members = [...snapshot.members.filter(member => member.user.id !== data.user.id), data as Member]; if (selectedMember?.user.id === data.user.id) selectedMember = data; profileSaved(data.user as User); }
     else if (event.type === 'member_leave') { snapshot.members = snapshot.members.filter(member => member.user.id !== data.user_id); }
     else if (event.type === 'channel_create' || event.type === 'channel_update') {
       snapshot.channels = upsert(snapshot.channels, data as Channel);
@@ -355,21 +420,22 @@
     else if (event.type === 'role_delete') { snapshot.roles = snapshot.roles.filter(role => role.id !== data.id); }
     else if (event.type === 'server_update') { snapshot.server = data; selected = data;rememberJoined(data); }
     else if (event.type === 'permissions_update') {
+      const permissionRevision = ++permissionRefreshVersion;
       snapshot.permissions = data.permissions; snapshot.is_owner = data.is_owner;dms=dms.map(dm=>({...dm,my_permissions:data.permissions}));
       if (!can(data.permissions, 2, data.is_owner)) { aiRefreshVersion++; aiFlags = []; latestAiFlag = null; aiLiveUpdates.clear(); aiMore = false; aiLoading = false; if (modal === 'ai-review') modal = null; }
       else void refreshAiFlags();
       if (!can(data.permissions, 12, data.is_owner) || !can(data.permissions, 0, data.is_owner)) voice.leave();
-      snapshot.channels = snapshot.channels.map(channel => ({ ...channel, my_permissions: data.permissions }));
+      snapshot.channels = snapshot.channels.map(channel => ({ ...channel, my_permissions: data.channel_permissions?.[channel.id] ?? data.permissions }));
       if (!can(data.permissions, 0, data.is_owner)) { snapshot.channels=[];if(!dms.some(dm=>dm.id===activeId)){historyVersion++;historyAbort?.abort();activeId='';messages=[];attachments=[];reply=null;draft='';} }
       else {
         const version = contextVersion, permissions = data.permissions;
         void api.request<Channel[]>('/channels').then(refreshed => {
-          if (version !== contextVersion || !snapshot || snapshot.permissions !== permissions) return;
+          if (version !== contextVersion || permissionRevision !== permissionRefreshVersion || !snapshot || snapshot.permissions !== permissions) return;
           snapshot = { ...snapshot, channels: refreshed };
           if (!activeId && refreshed.length) void openChannel(refreshed.find(channel => channel.type === 'text') ?? refreshed[0]);
         }).catch(cause => { if (version === contextVersion) handleError(cause); });
       }
-      if (!can(data.permissions, 7, data.is_owner)) { attachments = []; uploading = false; }
+      if (!can(data.channel_permissions?.[activeId] ?? data.permissions, 7, data.is_owner)) { void uploadTray?.discardPending(); attachments = []; uploading = false; }
       if (modal === 'admin' || modal === 'member' || modal === 'channel-settings') modal = null;
     }
     else if (event.type === 'error') { chatError = data.message; }
@@ -377,6 +443,7 @@
   }
   async function scrollBottom() { await tick(); if (messageScroll) messageScroll.scrollTop = messageScroll.scrollHeight;scheduleAck(); }
   async function openChannel(channel: Channel, resetDraft = true, around?:string) {
+    reacting = null; composeEmojiAnchor = null;
     if (resetDraft && activeId && active?.type !== 'voice' && !viewingHistory && messageScroll && !loading) {
       channelViews.delete(activeId); channelViews.set(activeId, { messages: [...messages], hasOlder, scrollTop: messageScroll.scrollTop, atBottom: messageScroll.scrollHeight - messageScroll.scrollTop - messageScroll.clientHeight < 80 });
       while (channelViews.size > 8) channelViews.delete(channelViews.keys().next().value!);
@@ -467,7 +534,7 @@
   }
   async function saveChannel(event: SubmitEvent) {
     event.preventDefault(); if (!channelSettings) return; busy = true; error = '';
-    try { const { id, name, topic, category_id, media_allowed, user_limit } = channelSettings; const updated = await api.request<Channel>(`/channels/${id}`, 'PATCH', { name, topic, category_id, media_allowed, ...(channelSettings.type === 'voice' ? { user_limit: Number(user_limit ?? 10) } : {}) }); if (snapshot) snapshot = { ...snapshot, channels: upsert(snapshot.channels, updated) }; modal = null; }
+    try { const { id, name, topic, category_id, media_allowed, user_limit } = channelSettings; const updated = await api.request<Channel>(`/channels/${id}`, 'PATCH', { name, topic, category_id, media_allowed, ...(channelSettings.type === 'voice' ? { user_limit: Number(user_limit ?? 10) } : {}), ...(channelSettings.parent_id ? { archived: !!channelSettings.archived } : {}) }); if (snapshot) snapshot = { ...snapshot, channels: upsert(snapshot.channels, updated) }; modal = null; }
     catch (cause) { error = messageError(cause); childError(cause); } finally { busy = false; }
   }
   async function deleteChannel() { if (!channelSettings) return; busy = true; error = ''; try { await api.request(`/channels/${channelSettings.id}`, 'DELETE'); modal = null; } catch (cause) { error = messageError(cause); childError(cause); } finally { busy = false; } }
@@ -486,7 +553,7 @@
     return { destroy() { node.removeEventListener('keydown', handler); previous?.focus(); } };
   }
   onMount(() => {
-    clock = setInterval(() => now = Date.now(), 1000);railTimer=setInterval(()=>void pollSavedServers(),60000);document.addEventListener('visibilitychange',readVisibility);navigator.serviceWorker?.addEventListener('message',notificationClick);
+    clock = setInterval(() => now = Date.now(), 1000);railTimer=setInterval(()=>void pollSavedServers(),60000);document.addEventListener('visibilitychange',readVisibility);navigator.serviceWorker?.addEventListener('message',notificationClick);stopDesktopClicks=onDesktopNotificationClick(target=>void activateNotification(target));
     void (async () => {
       const noticeParams=new URLSearchParams(location.search);const noticeSlug=/^\/s\/([a-z0-9-]{2,32})/.exec(location.pathname)?.[1];const noticeTarget=knownNotificationTarget({origin:noticeParams.get('notify_host'),slug:noticeSlug,...(noticeParams.get('channel')?{channel_id:noticeParams.get('channel')}:{})},savedServers);if(noticeTarget){pendingNotificationTarget=noticeTarget;await connectTarget(noticeTarget);return;}
       // Alternate hosts persist only after an explicit choice on this browser.
@@ -505,7 +572,7 @@
       }
     })();
   });
-  onDestroy(() => { appAlive=false;appAbort.abort();socialAbort?.abort();clearTimeout(ackTimer);clearTimeout(readRefreshTimer);clearInterval(railTimer);soundAudio?.pause();document.removeEventListener('visibilitychange',readVisibility);navigator.serviceWorker?.removeEventListener('message',notificationClick);voiceWakeLock.dispose(); voice.leave(); connection?.stop(); historyAbort?.abort(); clearInterval(clock); clearTimeout(toastTimer); });
+  onDestroy(() => { appAlive=false;appAbort.abort();socialAbort?.abort();clearTimeout(ackTimer);clearTimeout(readRefreshTimer);clearInterval(railTimer);soundAudio?.pause();document.removeEventListener('visibilitychange',readVisibility);navigator.serviceWorker?.removeEventListener('message',notificationClick);stopDesktopClicks();voiceWakeLock.dispose(); voice.leave(); connection?.stop(); historyAbort?.abort(); clearInterval(clock); clearTimeout(toastTimer); });
 </script>
 
 <svelte:window onfocus={()=>{restoreSavedSession();scheduleAck();}} onpageshow={restoreSavedSession} onstorage={sessionStorageChanged}/>
@@ -537,6 +604,7 @@
           {#each group as channel}
             <div class="channel-line"><button class="channel-item" class:selected={activeId === channel.id} class:has-unread={unread(stateFor(channel.id,readStates))} aria-current={activeId === channel.id ? 'page' : undefined} onclick={() => openChannel(channel)}><Icon name={channel.type === 'voice' ? 'people' : 'hash'} size={18}/><span>{channel.name}</span>{#if stateFor(channel.id,readStates)?.mention_count}<span class="unread-count" aria-label={`${stateFor(channel.id,readStates)!.mention_count} mentions`}>{stateFor(channel.id,readStates)!.mention_count>99?'99+':stateFor(channel.id,readStates)!.mention_count}</span>{/if}{#if channel.type === 'voice'}<span class="small muted">{voiceStates.filter(item => item.channel_id === channel.id).length}/{channel.user_limit ?? 10}</span>{/if}</button>{#if channel.type === 'voice'}{#if $voiceStatus.channelId === channel.id}<button class="voice-channel-action danger" aria-label={`Leave voice ${channel.name}`} onclick={() => voice.leave()}>Leave</button>{:else if voiceAvailable && can(channel.my_permissions, 12, snapshot?.is_owner)}<button class="voice-channel-action" aria-label={`Join voice ${channel.name}`} disabled={status !== 'connected'} onclick={() => joinVoice(channel)}>Join</button>{/if}{/if}</div>
             {#if channel.type === 'voice'}{#each voiceStates.filter(item => item.channel_id === channel.id) as occupant}<div class="voice-subscriber" class:is-speaking={occupant.user_id === snapshot?.user.id ? $voiceStatus.speaking : voiceSpeaking[occupant.user_id]}><span class="status-dot"></span>{snapshot?.members.find(member => member.user.id === occupant.user_id)?.user.display_name ?? 'Member'}{occupant.self_mute ? ' · muted' : ''}{occupant.streaming ? ' · sharing' : ''}</div>{/each}{/if}
+            {#if channel.type === 'text'}{#each (snapshot?.channels ?? []).filter(thread => thread.parent_id === channel.id && !thread.archived) as thread}<button class="channel-item thread-nav" class:selected={activeId === thread.id} class:has-unread={unread(stateFor(thread.id,readStates))} aria-label={`Open thread ${thread.name}`} onclick={() => openChannel(thread)}><Icon name="chat" size={14}/><span>{thread.name}</span>{#if stateFor(thread.id,readStates)?.mention_count}<span class="unread-count">{stateFor(thread.id,readStates)!.mention_count}</span>{/if}</button>{/each}{/if}
           {/each}
         {/if}
       {/each}
@@ -545,7 +613,7 @@
       {#if !dms.length}<p class="small muted dm-empty">No direct messages yet.</p>{/if}{/if}
       <div class="sidebar-note"><Icon name="lock" size={13}/><br/>Hosted by your community.<br/>Accounts stay on this server.</div>
     </div>
-    <div class="user-panel"><div class="avatar">{snapshot ? initials(snapshot.user.display_name) : '?'}</div><div class="identity"><strong>{snapshot?.user.display_name ?? 'Not signed in'}</strong><span>{snapshot?.is_owner ? 'Server owner' : snapshot ? `@${snapshot.user.username}` : 'Welcome to ChitChat'}</span></div><button class="icon-button" title="Appearance" aria-label="Appearance" onclick={()=>modal='appearance'}><Icon name="palette" size={17}/></button>{#if snapshot}<button class="icon-button" title="Sign out of this server" aria-label="Sign out of this server" onclick={logout}><Icon name="logout" size={17}/></button>{/if}</div>
+    <div class="user-panel">{#if snapshot}<button class="icon-button" aria-label="Edit your profile" title="Your profile" onclick={() => modal = 'profile'}><Avatar user={snapshot.user} {origin} status={selfMember ? memberPresence(selfMember) : 'online'}/></button>{:else}<div class="avatar">?</div>{/if}<div class="identity"><strong>{snapshot?.user.display_name ?? 'Not signed in'}</strong><span>{snapshot?.user.status_text || (snapshot?.user.status === 'away' ? 'Away' : snapshot?.is_owner ? 'Server owner' : snapshot ? `@${snapshot.user.username}` : 'Welcome to ChitChat')}</span></div><button class="icon-button" title="Appearance" aria-label="Appearance" onclick={()=>modal='appearance'}><Icon name="palette" size={17}/></button>{#if snapshot}<button class="icon-button" title="Sign out of this server" aria-label="Sign out of this server" onclick={logout}><Icon name="logout" size={17}/></button>{/if}</div>
   </aside>
 
   <main class="main">
@@ -553,15 +621,17 @@
       <button class="icon-button mobile-only" aria-label="Open channel navigation" onclick={() => navOpen = true}><Icon name="menu"/></button>
       <div class="header-hash"><Icon name={active?.type==='dm'?'chat':'hash'} size={25}/></div>
       <div><h2>{active?.name ?? 'Welcome home'}</h2><p>{active?.topic || (active ? 'A little space to keep the conversation going.' : 'Your people. Your space. Your server.')}</p></div>
-      <div class="header-actions">{#if snapshot}<button class="icon-button" title="Search messages" aria-label="Search messages" onclick={()=>modal='search'}><Icon name="search" size={19}/></button><button class="icon-button" title="Notifications" aria-label="Notification settings" onclick={()=>modal='notifications'}><Icon name="bell" size={19}/></button>{#if dmNoticeCollapsed && active?.type==='dm'}<button class="ai-notice-chip" aria-label="Show encryption notice" aria-expanded="false" title="Not end-to-end encrypted: the host's admin can read DMs." onclick={() => setDmNoticeCollapsed(false)}>Not E2E</button>{/if}{#if aiNoticeCollapsed && coversChannel(snapshot.ai_moderation, active)}<button class="ai-notice-chip" aria-label="Show AI moderation notice" aria-expanded="false" title={`AI moderation: ${snapshot.ai_moderation!.providers.join(', ')}${snapshot.ai_moderation!.cloud ? ' · Messages sent to an outside AI service' : ''}`} onclick={() => setAiNoticeCollapsed(false)}>AI{snapshot.ai_moderation!.cloud ? ' · Cloud' : ''}</button>{/if}<span class="live-badge"><span class="status-dot" class:offline={status !== 'connected'}></span>{status === 'connected' ? 'Connected' : status === 'reconnecting' ? 'Reconnecting' : 'Connecting'}</span>{#if active && active.type!=='dm' && manageChannels}<button class="icon-button" title="Channel settings" aria-label="Channel settings" onclick={() => { channelSettings = { ...active! }; confirmChannelDelete = false; error = ''; modal = 'channel-settings'; }}><Icon name="edit" size={18}/></button>{/if}{#if can(snapshot.permissions, 2, snapshot.is_owner)}<button class="secondary ai-review-button" aria-label={`AI review queue, ${aiFlags.length}${aiMore ? '+' : ''} open flags`} onclick={() => modal = 'ai-review'}>AI review <span class="ai-count">{aiLoading ? '…' : `${aiFlags.length}${aiMore ? '+' : ''}`}</span></button>{/if}{#if settingsAllowed}<button class="icon-button" title="Server settings" aria-label="Server settings" onclick={() => modal = 'admin'}><Icon name="shield" size={19}/></button>{/if}<button class="icon-button" aria-label="Toggle members" aria-pressed={showMembers} title="Members" onclick={() => showMembers = !showMembers}><Icon name="people"/></button>{/if}</div>
+      <div class="header-actions">{#if snapshot}{#if active && active.type !== 'voice'}<button class="icon-button" aria-label="Pinned messages" title="Pinned messages" onclick={() => modal = 'pins'}><Icon name="pin" size={18}/></button>{#if active.type === 'text'}<button class="icon-button" aria-label="View threads" title="Threads" onclick={() => modal = 'threads'}><Icon name="chat" size={18}/></button>{#if can(snapshot?.permissions, 4, snapshot?.is_owner)}<button class="icon-button" aria-label="Channel posting rules" title="Posting rules" onclick={() => { channelSettings = { ...active! }; modal = 'channel-permissions'; }}><Icon name="shield" size={18}/></button>{/if}{/if}{/if}
+      <button class="icon-button" title="Search messages" aria-label="Search messages" onclick={()=>modal='search'}><Icon name="search" size={19}/></button><button class="icon-button" title="Notifications" aria-label="Notification settings" onclick={()=>modal='notifications'}><Icon name="bell" size={19}/></button>{#if dmNoticeCollapsed && active?.type==='dm'}<button class="ai-notice-chip" aria-label="Show encryption notice" aria-expanded="false" title="Not end-to-end encrypted: the host's admin can read DMs." onclick={() => setDmNoticeCollapsed(false)}>Not E2E</button>{/if}{#if aiNoticeCollapsed && coversChannel(snapshot.ai_moderation, active)}<button class="ai-notice-chip" aria-label="Show AI moderation notice" aria-expanded="false" title={`AI moderation: ${snapshot.ai_moderation!.providers.join(', ')}${snapshot.ai_moderation!.cloud ? ' · Messages sent to an outside AI service' : ''}`} onclick={() => setAiNoticeCollapsed(false)}>AI{snapshot.ai_moderation!.cloud ? ' · Cloud' : ''}</button>{/if}<span class="live-badge"><span class="status-dot" class:offline={status !== 'connected'}></span>{status === 'connected' ? 'Connected' : status === 'reconnecting' ? 'Reconnecting' : 'Connecting'}</span>{#if active && active.type!=='dm' && manageChannels}<button class="icon-button" title="Channel settings" aria-label="Channel settings" onclick={() => { channelSettings = { ...active! }; confirmChannelDelete = false; error = ''; modal = 'channel-settings'; }}><Icon name="edit" size={18}/></button>{/if}{#if can(snapshot.permissions, 2, snapshot.is_owner)}<button class="secondary ai-review-button" aria-label={`AI review queue, ${aiFlags.length}${aiMore ? '+' : ''} open flags`} onclick={() => modal = 'ai-review'}>AI review <span class="ai-count">{aiLoading ? '…' : `${aiFlags.length}${aiMore ? '+' : ''}`}</span></button>{/if}{#if settingsAllowed}<button class="icon-button" title="Server settings" aria-label="Server settings" onclick={() => modal = 'admin'}><Icon name="shield" size={19}/></button>{/if}<button class="icon-button" aria-label="Toggle members" aria-pressed={showMembers} title="Members" onclick={() => showMembers = !showMembers}><Icon name="people"/></button>{/if}</div>
     </header>
     {#if chatError}<div class="banner error" role="alert"><span>{chatError}</span><button class="icon-button" aria-label="Dismiss error" onclick={() => chatError = ''}><Icon name="close" size={16}/></button></div>{/if}
     {#if snapshot && status !== 'connected'}<div class="banner notice" role="status">Connection interrupted. Reconnecting to your server…</div>{/if}
     {#if snapshot && muted}<div class="banner notice" role="status">Muted until {new Date(mutedUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. You can still read messages. Your draft is saved here.</div>{/if}
     <div class="chat-body">
       <section class="conversation" aria-label="Conversation">
-        {#if snapshot}<VoicePanel panelScope={`${origin}:${api.slug}`} client={voice} {snapshot} selected={active?.type === 'voice' ? active : undefined} states={voiceStates} speaking={voiceSpeaking} connected={status === 'connected'} onJoin={joinVoice}/>{/if}
+        {#if snapshot}<VoicePanel {origin} panelScope={`${origin}:${api.slug}`} client={voice} {snapshot} selected={active?.type === 'voice' ? active : undefined} states={voiceStates} speaking={voiceSpeaking} connected={status === 'connected'} onJoin={joinVoice}/>{/if}
         {#if active && active.type !== 'voice'}
+          {#if active.parent_id}<div class="banner notice"><span>Thread{#if activeParent} in #{activeParent.name}{/if}{active.archived ? ' · Archived' : ''}</span>{#if activeParent}<div class="button-row">{#if active.root_message_id}<button class="secondary" onclick={jumpThreadRoot}>View starter</button>{/if}<button class="secondary" onclick={() => openChannel(activeParent!)}>Back to channel</button></div>{/if}</div>{/if}
           {#if active.type==='dm'&&!dmNoticeCollapsed}<div class="banner notice dm-privacy ai-channel-notice" role="status"><span>Not end-to-end encrypted: the host's admin can read DMs.</span><button class="icon-button" aria-label="Collapse encryption notice" title="Collapse notice" onclick={() => setDmNoticeCollapsed(true)}><Icon name="close" size={16}/></button></div>{/if}
           {#if viewingHistory}<div class="banner notice"><span>Viewing earlier messages. New messages stay unread.</span><button class="secondary" onclick={()=>openChannel(active!,false)}>Back to latest</button></div>{/if}
           {#if !aiNoticeCollapsed && coversChannel(snapshot?.ai_moderation, active)}<div class="banner notice ai-channel-notice" role="status"><span>Messages here are checked by an AI moderator: {snapshot!.ai_moderation!.providers.join(', ')}. {#if snapshot!.ai_moderation!.cloud}<strong>Messages are sent to an outside AI service.</strong>{/if} Checks run in the background.</span><button class="icon-button" aria-label="Collapse AI moderation notice" title="Collapse notice" onclick={() => setAiNoticeCollapsed(true)}><Icon name="close" size={16}/></button></div>{/if}
@@ -571,24 +641,28 @@
             {#each messages as message, index (message.id)}
               {#if index === 0 || !sameDay(messages[index - 1].created_at, message.created_at)}<div class="date-divider">{date(message.created_at)}</div>{/if}
               <article id={`message-${message.id}`} class="message" class:mentioned={snapshot&&message.author.id!==snapshot.user.id&&mentioned(message,snapshot.user.id,selfRoles())} class:search-jump={message.id===jumpId} aria-label={`Message from ${message.author.display_name}`}>
-                <div class={`avatar color-${color(message.author.id)}`}>{initials(message.author.display_name)}</div>
+                <Avatar user={snapshot?.members.find(member => member.user.id === message.author.id)?.user ?? message.author} {origin}/>
                 <div class="message-content">
                   {#if message.reply_to}<div class="reply-reference"><Icon name="reply" size={11}/> {messages.find(item => item.id === message.reply_to)?.content.slice(0, 100) ?? 'Reply to an earlier message'}</div>{/if}
-                  <div class="message-meta"><strong>{message.author.display_name}</strong><time datetime={message.created_at} title={new Date(message.created_at).toLocaleString()}>{time(message.created_at)}</time></div>
+                  <div class="message-meta"><strong>{message.author.display_name}</strong>{#if message.pinned}<span class="small muted" title="Pinned message"><Icon name="pin" size={12}/></span>{/if}<time datetime={message.created_at} title={new Date(message.created_at).toLocaleString()}>{time(message.created_at)}</time></div>
                   {#if editing?.id === message.id}
                     <form class="edit-form" onsubmit={saveEdit}><textarea aria-label="Edit message" bind:value={editText} required={!editing.attachments.length}></textarea><div class="edit-buttons"><button type="submit" class="primary" disabled={actionBusy || !!contentLimits(editText, editing.attachments.length).error}>Save changes</button><button type="button" class="secondary" onclick={() => editing = null}>Cancel</button></div></form>
-                  {:else}<p class="message-text"><MessageText content={message.content} onLink={confirmLink} members={snapshot?.members??[]} roles={snapshot?.roles??[]} channels={snapshot?.channels??[]} selfId={snapshot?.user.id??''} onMember={mentionMember} onChannel={mentionChannel}/>{#if message.edited_at}<span class="edited">(edited)</span>{/if}</p>{/if}
+                  {:else}<p class="message-text"><MessageText content={message.content} onLink={confirmLink} members={snapshot?.members??[]} roles={snapshot?.roles??[]} channels={snapshot?.channels??[]} selfId={snapshot?.user.id??''} onMember={mentionMember} onChannel={mentionChannel} emojis={snapshot?.emojis ?? []} {origin}/>{#if message.edited_at}<span class="edited">(edited)</span>{/if}</p>{/if}
+                  {#if message.thread_id}<button class="small muted" onclick={() => startThread(message)}>Open thread →</button>{/if}
                   {#if message.attachments?.length}<MessageMedia attachments={message.attachments} {origin} onView={attachment => { viewedAttachment = attachment; modal = 'media'; }}/>{/if}
-                  {#if message.reactions.length}<div class="reactions">{#each message.reactions as reaction}<button class="reaction" class:mine={reaction.me} aria-label={`${reaction.me ? 'Remove' : 'Add'} ${reaction.emoji} reaction, ${reaction.count}`} aria-pressed={reaction.me} disabled={!reaction.me && !can(active.my_permissions, 8, snapshot?.is_owner)} onclick={() => react(message, reaction.emoji)}>{reaction.emoji} {reaction.count}</button>{/each}</div>{/if}
+                  {#if message.reactions.length}<div class="reactions">{#each message.reactions as reaction}<button class="reaction" class:mine={reaction.me} aria-label={`${reaction.me ? 'Remove' : 'Add'} ${reactionName(reaction.emoji, snapshot?.emojis ?? [])} reaction, ${reaction.count}`} aria-pressed={reaction.me} disabled={!reaction.me && !can(active.my_permissions, 8, snapshot?.is_owner)} onclick={() => react(message, reaction.emoji)}><EmojiGlyph value={reaction.emoji} emojis={snapshot?.emojis ?? []} {origin}/> {reaction.count}</button>{/each}{#if can(active.my_permissions, 8, snapshot?.is_owner) && message.reactions.length < 20}<button class="reaction add-reaction" aria-label="Add a reaction" title="Add a reaction" onclick={event => reacting = { message, anchor: event.currentTarget }}><Icon name="plus" size={12}/></button>{/if}</div>{/if}
                 </div>
                 <div class="message-actions">
+                  {#if active.type === 'dm' || can(snapshot?.permissions, 2, snapshot?.is_owner)}<button class="icon-button" aria-label={message.pinned ? 'Unpin message' : 'Pin message'} title={message.pinned ? 'Unpin' : 'Pin'} disabled={actionBusy || muted} onclick={() => togglePin(message)}><Icon name="pin" size={14}/></button>{/if}
+                  {#if active.type === 'text' && !active.parent_id && (sendAllowed || message.thread_id)}<button class="icon-button" aria-label={message.thread_id ? 'Open thread' : 'Start thread'} title={message.thread_id ? 'Open thread' : 'Start thread'} disabled={actionBusy} onclick={() => startThread(message)}><Icon name="chat" size={14}/></button>{/if}
                   {#if sendAllowed}<button class="icon-button" aria-label="Reply to message" title="Reply" onclick={() => { reply = message; composer?.focus(); }}><Icon name="reply" size={15}/></button>{/if}
-                  {#if can(active.my_permissions, 8, snapshot?.is_owner)}<button class="icon-button" aria-label="React with thumbs up" title="React with thumbs up" onclick={() => react(message, '👍')}>☺</button>{/if}
-                  {#if message.author.id === snapshot?.user.id}<button class="icon-button" aria-label="Edit message" title="Edit" onclick={() => { editing = message; editText = message.content; }}><Icon name="edit" size={14}/></button>{/if}
+                  {#if can(active.my_permissions, 8, snapshot?.is_owner)}<button class="icon-button" aria-label="Add a reaction" title="Add a reaction" aria-haspopup="dialog" aria-expanded={reacting?.message.id === message.id} onclick={event => { const anchor = event.currentTarget; reacting = reacting?.anchor === anchor ? null : { message, anchor }; }}><Icon name="smile" size={15}/></button>{/if}
+                  {#if message.author.id === snapshot?.user.id && sendAllowed}<button class="icon-button" aria-label="Edit message" title="Edit" onclick={() => { editing = message; editText = message.content; }}><Icon name="edit" size={14}/></button>{/if}
                   {#if message.author.id === snapshot?.user.id || active.type!=='dm'&&can(active.my_permissions, 2, snapshot?.is_owner)}<button class="icon-button danger" aria-label="Delete message" title="Delete" onclick={() => { deleting = message; error = ''; modal = 'delete'; }}><Icon name="trash" size={14}/></button>{/if}
                 </div>
               </article>
             {/each}
+            {#if reacting && reacting.message.channel_id === activeId}{@const target = reacting.message}<EmojiPicker extra={customEmojiGroups} anchor={reacting.anchor} onPick={emoji => react(messages.find(item => item.id === target.id) ?? target, emoji)} onClose={() => reacting = null}/>{/if}
           </div>
           <div class="composer-area" use:fileInput={{ enabled: attachAllowed && !uploading && !recording && !muted && status === 'connected', add: files => uploadTray?.addFiles(files) }}>
             <form class="composer" onsubmit={event => { event.preventDefault(); void sendMessage(); }}>
@@ -598,6 +672,8 @@
               <div class="composer-row"><textarea bind:this={composer} bind:value={draft} aria-label={`Message ${active.type==='dm'?'':'#'}${active.name}`} placeholder={sendAllowed ? `Message ${active.type==='dm'?'':'#'}${active.name}` : 'You can read, but cannot send messages in this channel.'} disabled={!sendAllowed} onkeydown={composerKey} oninput={event=>{mentionCursor=event.currentTarget.selectionStart;connection?.typing(activeId);}} onclick={event=>mentionCursor=event.currentTarget.selectionStart} onkeyup={event=>{if(!['Enter','Tab','Escape','ArrowUp','ArrowDown'].includes(event.key))mentionCursor=event.currentTarget.selectionStart;}}></textarea>{#if attachAllowed && (snapshot?.server.voice_messages ?? true)}{#key `${api.origin}:${api.slug}:${activeId}`}<VoiceRecorder enabled={attachAllowed && !muted && status==='connected'} canStart={!sending && !uploading && attachments.length<10 && cooldownSeconds===0} bind:busy={recording} onAttach={async file=>{const added=await uploadTray?.addFiles([file],true);if(!added)throw new Error('The recording was not attached. Check the upload error below and try again.');}}/>{/key}{/if}<button class="send-button" type="submit" title={muted ? 'Temporarily muted' : cooldownSeconds ? `Wait ${cooldownSeconds} seconds` : 'Send message'} aria-label="Send message" disabled={!sendAllowed || !!draftLimits.error || sending || uploading || recording || status !== 'connected' || cooldownSeconds > 0 || muted}><Icon name="send" size={17}/></button></div>
             </form>
             {#if attachAllowed}{#key `${api.origin}:${api.slug}:${activeId}`}<UploadTray bind:this={uploadTray} {api} channel={activeId} showTray={false} blocked={recording} enabled={attachAllowed && !muted && !sending && status === 'connected'} bind:attachments bind:uploading onError={handleError}/>{/key}{:else}<p class="small muted upload-hint">Attachments are disabled here or require the Attach files permission.</p>{/if}
+            <div class="button-row"><button class="secondary small" disabled={!sendAllowed || muted || status !== 'connected'} onclick={event => composeEmojiAnchor = event.currentTarget}><Icon name="smile" size={15}/>Emoji</button>{#if can(snapshot?.permissions, 10, snapshot?.is_owner)}<button class="secondary small" onclick={() => modal = 'server-emojis'}>Manage server emoji</button>{/if}</div>
+            {#if composeEmojiAnchor}<EmojiPicker anchor={composeEmojiAnchor} extra={customEmojiGroups} label="Choose an emoji" onPick={value => { void composeEmoji(value); }} onClose={() => composeEmojiAnchor = null}/>{/if}
             <label class="screen-awake-option"><input type="checkbox" checked={keepScreenOn} onchange={event=>setKeepScreenOn(event.currentTarget.checked)}/>Keep screen on while ChitChat is open</label>
             <div class="composer-footer"><span>{cooldownSeconds ? `Wait ${cooldownSeconds}s before sending again. Draft kept.` : 'Enter to send · Shift + Enter for a new line'}</span><span class:danger={draftLimits.characters > 4000 || draftLimits.lines > 60}>{draft.length ? `${draftLimits.characters.toLocaleString()} / 4,000${draftLimits.lines > 50 ? ` · ${draftLimits.lines}/60 lines` : ''}` : 'Make yourself at home.'}</span></div>
             {#if draft.trim() && draftLimits.error}<p class="danger small" role="status">{draftLimits.error}</p>{/if}
@@ -605,7 +681,7 @@
           </div>
         {:else if active?.type !== 'voice'}<div class="empty-state"><div class="welcome-icon" style="margin:0 auto 20px"><Icon name="chat" size={29}/></div><h2>{snapshot ? 'A fresh start.' : 'A place for your people.'}</h2><p>{snapshot ? 'This server has no channels yet.' : 'Join a community hosted by someone you trust. Your conversations have a home of their own.'}</p>{#if manageChannels}<button class="primary" onclick={() => { error = ''; modal = 'channel'; }}><Icon name="plus" size={17}/>Create a channel</button>{:else if !snapshot}<button class="primary" onclick={() => { modal = 'servers'; error = ''; }}>Find your server<Icon name="arrow" size={17}/></button>{/if}</div>{/if}
       </section>
-      {#if snapshot && showMembers}<aside class="members-panel mobile-visible" aria-label="Server members"><p class="eyebrow">The people here · {snapshot.members.length}</p><p class="small muted">{onlineMembers.length} online</p>{#each sortedMembers as member}<button class="member member-button" aria-label={`View member ${member.user.display_name}`} onclick={() => { selectedMember = member; modal = 'member'; }}><span class={`avatar color-${color(member.user.id)}`}>{initials(member.user.display_name)}</span><span><strong>{member.user.display_name}</strong><span class="member-status">{member.is_owner ? 'Server owner' : member.timed_out_until && Date.parse(member.timed_out_until) > now ? 'Timed out' : member.online ? 'Online' : 'Offline'}</span></span></button>{/each}</aside>{/if}
+      {#if snapshot && showMembers}<aside class="members-panel mobile-visible" aria-label="Server members"><p class="eyebrow">The people here · {snapshot.members.length}</p><p class="small muted">{onlineMembers.length} online</p>{#each sortedMembers as member}<button class="member member-button" aria-label={`View member ${member.user.display_name}`} onclick={() => { selectedMember = member; modal = 'member'; }}><Avatar user={member.user} {origin} status={memberPresence(member)}/><span><strong>{member.user.display_name}</strong>{#if member.user.status_text}<span class="member-status">{member.user.status_text}</span>{/if}<span class="member-status">{member.is_owner ? 'Server owner' : member.timed_out_until && Date.parse(member.timed_out_until) > now ? 'Timed out' : memberPresence(member) === 'away' ? 'Away' : member.online ? 'Online' : 'Offline'}</span></span></button>{/each}</aside>{/if}
     </div>
   </main>
 </div>
@@ -623,7 +699,12 @@
           {#if hubHostServers && snapshot}<button class:active={modal==='host-create'} aria-current={modal==='host-create'?'page':undefined} onclick={()=>{error='';modal='host-create';}}>Create server</button>{/if}
         </nav>
       {/if}
-      {#if modal==='search'&&snapshot}<SearchPanel {api} {snapshot} {dms} onJump={jumpToMessage} onLink={confirmLink}/>{#if error}<p class="error" role="alert">{error}</p>{/if}
+      {#if modal === 'profile' && snapshot}{@const profileApi = api}<ProfileSettings api={profileApi} user={snapshot.user} onSaved={user => { if (api === profileApi) profileSaved(user); }} onError={scopedError(api)}/>
+      {:else if modal === 'pins' && snapshot && active}<PinsPanel bind:this={pinsPanel} {api} {snapshot} channel={active} onJump={jumpToMessage} onLink={confirmLink} onError={scopedError(api)}/>
+      {:else if modal === 'threads' && snapshot && active}<ThreadList {api} {snapshot} parent={activeParent ?? active} onOpen={channel => { modal = null; void openChannel(channel); }} onError={scopedError(api)}/>
+      {:else if modal === 'channel-permissions' && snapshot && channelSettings}<ChannelPermissions {api} {snapshot} channel={channelSettings} onError={scopedError(api)}/>
+      {:else if modal === 'server-emojis' && snapshot}{@const emojiApi = api}<CustomEmojiSettings api={emojiApi} {snapshot} onChanged={emojis => { if (api === emojiApi && snapshot) snapshot = { ...snapshot, emojis }; }} onError={scopedError(api)}/>
+      {:else if modal==='search'&&snapshot}<SearchPanel {api} {snapshot} {dms} onJump={jumpToMessage} onLink={confirmLink}/>{#if error}<p class="error" role="alert">{error}</p>{/if}
       {:else if modal==='appearance'}<Appearance color={themeColor} onChange={savedTheme}/>{:else if modal==='notifications'&&snapshot}{#if preferencesLoaded}<NotificationSettings {api} {preferences} device={deviceNotifications} channel={active} onSaved={savedPreferences} onDevice={savedDevice}/>{:else}<h2 id="dialog-title">Notifications &amp; messages</h2><p role="status">{socialLoading?'Loading your preferences…':socialError||'Preferences are unavailable.'}</p><button class="secondary" disabled={socialLoading} onclick={()=>loadSocial()}>Retry preferences</button>{/if}
       {:else if modal==='dm-picker'&&snapshot}<h2 id="dialog-title">New direct message</h2><p class="small muted">Choose a member of this community. DMs are not end-to-end encrypted; the host administrator can read them.</p><label>Find a member<input type="search" bind:value={dmQuery} placeholder="Name or username"/></label>{#each snapshot.members.filter(m=>m.user.id!==snapshot!.user.id&&(m.user.display_name.toLocaleLowerCase().includes(dmQuery.toLocaleLowerCase())||m.user.username.toLocaleLowerCase().includes(dmQuery.toLocaleLowerCase()))).slice(0,50) as member(member.user.id)}<button class="server-choice" disabled={busy||!can(snapshot.permissions,16,snapshot.is_owner)} onclick={()=>openDirect(member.user.id)}><span>{member.user.display_name} <span class="small muted">@{member.user.username}</span></span></button>{/each}{#if error}<p class="error" role="alert">{error}</p>{/if}
       {:else if modal === 'admin' && snapshot}<AdminPanel {api} {snapshot} onCreated={createdServer} onOpen={server=>{void chooseServer(server);}} onError={scopedError(api)}/>
@@ -636,6 +717,7 @@
           <label>Channel name<input bind:value={channelSettings.name} required maxlength="64"/></label><label>Topic<textarea bind:value={channelSettings.topic} maxlength="1024"></textarea></label><label>Category<select bind:value={channelSettings.category_id}><option value={null}>No category</option>{#each categories as category}<option value={category.id}>{category.name}</option>{/each}</select></label>
           {#if channelSettings.type === 'text'}<label class="check-label"><input type="checkbox" bind:checked={channelSettings.media_allowed}/>Allow images, videos, audio &amp; files</label><p class="small muted">Members also need the Attach files permission.</p>
           {:else}<label>Maximum voice participants<input type="number" min="1" max="99" step="1" required value={channelSettings.user_limit ?? 10} oninput={event => channelSettings!.user_limit = event.currentTarget.valueAsNumber}/></label><p class="small muted">Estimated host upload at capacity: {roomUploadMbps(channelSettings.user_limit ?? 10).toFixed(1)} Mbps if everyone talks.</p>{#if (channelSettings.user_limit ?? 10) > 15}<p class="notice">Large rooms need a fast upload on the host and can stutter.</p>{/if}{/if}
+          {#if channelSettings.parent_id}<label class="check-label"><input type="checkbox" bind:checked={channelSettings.archived}/>Archive thread (new messages and uploads disabled)</label>{/if}
           {#if error}<div class="error" role="alert">{error}</div>{/if}<button class="primary" disabled={busy}>Save channel</button>
         </form><button class="secondary danger" disabled={busy} onclick={() => confirmChannelDelete = true}>Delete channel</button>{#if confirmChannelDelete}<div class="confirm-box"><p>Permanently delete #{channelSettings.name} and all its messages?</p><div class="button-row"><button class="secondary" disabled={busy} onclick={() => confirmChannelDelete = false}>Keep channel</button><button class="primary" disabled={busy} onclick={deleteChannel}>Confirm delete channel</button></div></div>{/if}
       {:else if modal === 'host-create' && hubHostServers && snapshot}

@@ -91,6 +91,8 @@ pub struct UserRow {
     pub display_name: String,
     pub password_hash: String,
     pub avatar_url: Option<String>,
+    pub status: String,
+    pub status_text: String,
     pub created_at: i64,
     pub timed_out_until: Option<i64>,
     pub signup_ip: Option<String>,
@@ -129,6 +131,9 @@ pub struct ChannelRow {
     /// Direct messages: the two people (dm_a < dm_b).
     pub dm_a: Option<i64>,
     pub dm_b: Option<i64>,
+    pub parent_id: Option<i64>,
+    pub root_message_id: Option<i64>,
+    pub archived: bool,
 }
 
 impl ChannelRow {
@@ -148,6 +153,8 @@ pub struct MessageRow {
     pub reply_to: Option<i64>,
     /// 0 = none, 1 = @everyone, 2 = @here.
     pub mention_everyone: i64,
+    pub pinned: bool,
+    pub thread_id: Option<i64>,
     pub author_id: i64,
     pub username: String,
     pub display_name: String,
@@ -210,12 +217,22 @@ pub struct UserOut {
     pub username: String,
     pub display_name: String,
     pub avatar_url: Option<String>,
+    pub status: String,
+    pub status_text: String,
     pub created_at: String,
 }
 
 impl From<&UserRow> for UserOut {
     fn from(u: &UserRow) -> Self {
-        UserOut { id: u.id.to_string(), username: u.username.clone(), display_name: u.display_name.clone(), avatar_url: u.avatar_url.clone(), created_at: ts(u.created_at) }
+        UserOut {
+            id: u.id.to_string(),
+            username: u.username.clone(),
+            display_name: u.display_name.clone(),
+            avatar_url: u.avatar_url.clone(),
+            status: u.status.clone(),
+            status_text: u.status_text.clone(),
+            created_at: ts(u.created_at),
+        }
     }
 }
 
@@ -225,6 +242,7 @@ pub struct MemberOut {
     pub role_ids: Vec<String>,
     pub joined_at: String,
     pub online: bool,
+    pub status: String,
     pub is_owner: bool,
     /// Set while the member is timed out.
     pub timed_out_until: Option<String>,
@@ -278,6 +296,9 @@ pub struct ChannelOut {
     pub media_allowed: bool,
     pub user_limit: i64,
     pub my_permissions: String,
+    pub parent_id: Option<String>,
+    pub root_message_id: Option<String>,
+    pub archived: bool,
 }
 
 impl ChannelOut {
@@ -292,6 +313,9 @@ impl ChannelOut {
             media_allowed: c.media_allowed,
             user_limit: c.user_limit,
             my_permissions: perms.to_string(),
+            parent_id: c.parent_id.map(|id| id.to_string()),
+            root_message_id: c.root_message_id.map(|id| id.to_string()),
+            archived: c.archived,
         }
     }
 }
@@ -320,6 +344,8 @@ pub struct MessageOut {
     pub created_at: String,
     pub edited_at: Option<String>,
     pub reply_to: Option<String>,
+    pub pinned: bool,
+    pub thread_id: Option<String>,
     pub reactions: Vec<ReactionOut>,
     pub attachments: Vec<AttachmentOut>,
     /// People pinged by `<@id>`, roles by `<@&id>`; `@everyone`/`@here` only count when the
@@ -342,6 +368,8 @@ impl MessageOut {
             created_at: ts(m.created_at),
             edited_at: m.edited_at.map(ts),
             reply_to: m.reply_to.map(|v| v.to_string()),
+            pinned: m.pinned,
+            thread_id: m.thread_id.map(|id| id.to_string()),
             reactions,
             attachments: Vec::new(),
             mentions: Vec::new(),

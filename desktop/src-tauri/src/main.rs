@@ -15,6 +15,7 @@ use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as _};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+#[cfg(not(windows))]
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
@@ -117,11 +118,52 @@ Updating restarts ChitChat.",
     }
 }
 
-/// From the client: a system notification about a new message.
+/// From the client: a system notification about a new message. `target` (opaque to the app, at
+/// most 1 KiB) comes back to the client in a `notification-click` event when it is clicked. With
+/// `when_closed` false, nothing shows while the window is closed to the tray.
 #[tauri::command]
-fn notify(app: AppHandle, title: String, body: String) -> Result<(), String> {
+fn notify(app: AppHandle, title: String, body: String, target: Option<String>, when_closed: Option<bool>) -> Result<(), String> {
+    let open = app.get_webview_window("main").and_then(|w| w.is_visible().ok()).unwrap_or(false);
+    if when_closed == Some(false) && !open {
+        return Ok(());
+    }
     let cut = |s: String, n: usize| s.chars().take(n).collect::<String>();
-    app.notification().builder().title(cut(title, 120)).body(cut(body, 300)).show().map_err(|e| e.to_string())
+    let target = target.filter(|t| t.len() <= 1024);
+    #[cfg(windows)]
+    return windows_toast(&app, &cut(title, 120), &cut(body, 300), target).map_err(|e| e.to_string());
+    #[cfg(not(windows))]
+    {
+        let _ = target; // Click handling is Windows-only for now.
+        app.notification().builder().title(cut(title, 120)).body(cut(body, 300)).show().map_err(|e| e.to_string())
+    }
+}
+
+/// A Windows toast that opens the app (and the conversation) when clicked. Silent: the client
+/// plays its own notification sound, with the user's volume.
+#[cfg(windows)]
+fn windows_toast(app: &AppHandle, title: &str, body: &str, target: Option<String>) -> tauri_winrt_notification::Result<()> {
+    use tauri::Emitter;
+    use tauri_winrt_notification::Toast;
+    // Like the notification plugin: the installed app has its own identity (its Start menu
+    // shortcut); a bare build from target/ borrows PowerShell's so toasts still show.
+    let installed = tauri::utils::platform::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| !dir.ends_with("target/debug") && !dir.ends_with("target/release")))
+        .unwrap_or(true);
+    let id = if installed { app.config().identifier.clone() } else { Toast::POWERSHELL_APP_ID.to_string() };
+    let clicked = app.clone();
+    Toast::new(&id)
+        .title(title)
+        .text1(body)
+        .sound(None)
+        .on_activated(move |_| {
+            show(&clicked);
+            if let Some(target) = &target {
+                let _ = clicked.emit_to("main", "notification-click", target.clone());
+            }
+            Ok(())
+        })
+        .show()
 }
 
 fn main() {

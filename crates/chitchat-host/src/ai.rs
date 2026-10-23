@@ -205,9 +205,9 @@ pub async fn save_config(db: &sqlx::SqlitePool, cfg: &AiConfig) -> sqlx::Result<
 }
 
 /// Queues a new or edited message if AI moderation covers it (the owner is never checked).
-pub fn submit(srv: &ServerCtx, job: Job, author_is_owner: bool) {
+pub fn submit(srv: &ServerCtx, job: Job, author_is_owner: bool, parent_id: Option<i64>) {
     let cfg = srv.ai.config();
-    if author_is_owner || !cfg.active() || job.content.trim().is_empty() || !cfg.checks_channel(job.channel_id) {
+    if author_is_owner || !cfg.active() || job.content.trim().is_empty() || !(cfg.checks_channel(job.channel_id) || parent_id.is_some_and(|id| cfg.checks_channel(id))) {
         return;
     }
     if srv.ai.tx.try_send(job).is_err() {

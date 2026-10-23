@@ -1,11 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "The bundled ChitChat client may only show notifications (other sites never load in the app).",
+  "description": "The bundled ChitChat client may only show notifications and hear their clicks (other sites never load in the app).",
   "windows": [
     "main"
   ],
   "permissions": [
-    "allow-notify"
+    "allow-notify",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
   ]
 }

@@ -27,3 +27,7 @@ serde_json = "1"
 lto = "thin"
 strip = true
 codegen-units = 1
+
+[target.'cfg(windows)'.dependencies]
+# Windows toasts with a click handler (the notification plugin has none on desktop).
+tauri-winrt-notification = "0.8"

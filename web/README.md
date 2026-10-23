@@ -42,3 +42,9 @@ Use Search messages in the sidebar or header to search the current community, in
 Direct messages stay inside one community and can be opened from a member profile or the Direct messages section. They are not end-to-end encrypted: the host operator can read stored messages. Members can turn off incoming DMs in Notifications.
 
 Notifications includes account-wide and per-channel preferences, browser opt-in, and device sound/volume controls. Unread badges are shared across signed-in devices; other saved communities refresh about once a minute. Browser notifications use a notification-only service worker where supported. Keep the page running to receive alerts; closed or suspended pages do not receive Web Push in this build.
+
+## Profiles, threads and server emoji
+
+Members can set a profile picture, online/away preference and custom status per server. Pictures are re-encoded and stored with the server backup. Pins open a searchable conversation location; threads are child text channels with their own history, unread state and notifications. Role posting rules can allow or deny writing, uploading files and adding reactions at the parent or thread level. Owners and administrators bypass posting restrictions.
+
+Server managers can add custom still emoji for messages and reactions. The picker includes standard emoji, search and recently used choices. Custom image references resolve only against the connected host. The host enforces posting rules and upload limits; hiding a client button is never the authorization check.

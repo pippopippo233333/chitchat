@@ -37,7 +37,8 @@
   }
 </script>
 
-<h2 id="dialog-title">{member.user.display_name}</h2><p class="muted small">@{member.user.username} · {member.is_owner ? 'Server owner' : member.online ? 'Online' : 'Offline'}</p>
+<h2 id="dialog-title">{member.user.display_name}</h2><p class="muted small">@{member.user.username} · {member.is_owner ? 'Server owner' : member.online ? member.status === 'away' ? 'Away' : 'Online' : 'Offline'}</p>
+{#if member.user.status_text}<p>{member.user.status_text}</p>{/if}
 {#if member.timed_out_until && Date.parse(member.timed_out_until) > Date.now()}<div class="notice">Timed out until {new Date(member.timed_out_until).toLocaleString()}</div>{/if}
 {#if error}<div class="error" role="alert">{error}</div>{/if}{#if success}<div class="notice" role="status">{success}</div>{/if}
 {#if onDirect&&member.user.id!==snapshot.user.id}<button class="primary" disabled={busy||!can(snapshot.permissions,16,snapshot.is_owner)} onclick={()=>onDirect?.(member.user.id)}>Send direct message</button>{/if}

@@ -37,7 +37,7 @@ pub async fn categories(auth: Auth) -> ApiResult<Json<Vec<CategoryOut>>> {
 }
 
 pub async fn channels(auth: Auth) -> ApiResult<Json<Vec<ChannelOut>>> {
-    Ok(Json(db::list_channels(&auth.srv.db, auth.perms).await?))
+    Ok(Json(db::list_channels(&auth.srv.db, auth.user.id, auth.perms).await?))
 }
 
 pub async fn members(auth: Auth) -> ApiResult<Json<Vec<MemberOut>>> {
@@ -67,10 +67,11 @@ pub async fn ready_snapshot(auth: &Auth) -> ApiResult<Value> {
         "permissions": auth.perms.to_string(),
         "server": ServerOut::new(&srv.slug, &db::server_row(&srv.db).await?),
         "categories": db::list_categories(&srv.db).await?,
-        "channels": db::list_channels(&srv.db, auth.perms).await?,
+        "channels": db::list_channels(&srv.db, auth.user.id, auth.perms).await?,
         "members": db::list_members(srv).await?,
         "roles": db::list_roles(&srv.db).await?,
         "voice_states": srv.voice_states(),
         "ai_moderation": crate::ai::notice(&srv.ai.config()),
+        "emojis": super::emoji::list_for(srv).await?,
     }))
 }

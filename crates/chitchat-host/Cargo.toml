@@ -1,6 +1,6 @@
 [package]
 name = "chitchat-host"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "AGPL-3.0-only"
 description = "Host for ChitChat, a self-hosted chat app"
@@ -41,3 +41,7 @@ hkdf = "0.12"
 sha2 = "0.10"
 aes-gcm = "0.10"
 base64 = "0.22"
+# Host updates: signed release archives
+minisign-verify = "0.3"
+flate2 = "1"
+tar = "0.4"

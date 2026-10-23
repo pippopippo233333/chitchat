@@ -259,6 +259,48 @@ CREATE INDEX push_subscriptions_user ON push_subscriptions(user_id);
 CREATE INDEX push_subscriptions_session ON push_subscriptions(token_hash);
 "#;
 
+/// Profiles are per server. Keeping one bounded avatar per user in SQLite makes it part of backups.
+const SCHEMA_V12: &str = r#"
+ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'online';
+ALTER TABLE users ADD COLUMN status_text TEXT NOT NULL DEFAULT '';
+CREATE TABLE user_avatars (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    hash TEXT NOT NULL,
+    image BLOB NOT NULL
+);
+"#;
+
+const SCHEMA_V13: &str = r#"
+CREATE TABLE message_pins (
+    message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+    pinned_by INTEGER NOT NULL REFERENCES users(id),
+    created_at INTEGER NOT NULL
+);
+ALTER TABLE channels ADD COLUMN parent_id INTEGER REFERENCES channels(id) ON DELETE CASCADE;
+ALTER TABLE channels ADD COLUMN root_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL;
+ALTER TABLE channels ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;
+CREATE UNIQUE INDEX channels_thread_root ON channels(root_message_id) WHERE root_message_id IS NOT NULL;
+CREATE INDEX channels_parent ON channels(parent_id);
+CREATE TABLE channel_overwrites (
+    channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    role_id INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+    allow INTEGER NOT NULL DEFAULT 0,
+    deny INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(channel_id, role_id)
+);
+"#;
+
+const SCHEMA_V14: &str = r#"
+CREATE TABLE custom_emojis (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    hash TEXT NOT NULL,
+    image BLOB NOT NULL,
+    created_by INTEGER NOT NULL REFERENCES users(id),
+    created_at INTEGER NOT NULL
+);
+"#;
+
 /// Shown in the network-wide server browser (discovery.rs), opt-in.
 const SCHEMA_V8: &str = r#"
 ALTER TABLE server ADD COLUMN discoverable INTEGER NOT NULL DEFAULT 0;
@@ -373,6 +415,24 @@ async fn migrate(pool: &SqlitePool) -> Result<()> {
         let mut tx = pool.begin().await?;
         sqlx::raw_sql(SCHEMA_V11).execute(&mut *tx).await?;
         sqlx::raw_sql("PRAGMA user_version = 11").execute(&mut *tx).await?;
+        tx.commit().await?;
+    }
+    if version < 12 {
+        let mut tx = pool.begin().await?;
+        sqlx::raw_sql(SCHEMA_V12).execute(&mut *tx).await?;
+        sqlx::raw_sql("PRAGMA user_version = 12").execute(&mut *tx).await?;
+        tx.commit().await?;
+    }
+    if version < 13 {
+        let mut tx = pool.begin().await?;
+        sqlx::raw_sql(SCHEMA_V13).execute(&mut *tx).await?;
+        sqlx::raw_sql("PRAGMA user_version = 13").execute(&mut *tx).await?;
+        tx.commit().await?;
+    }
+    if version < 14 {
+        let mut tx = pool.begin().await?;
+        sqlx::raw_sql(SCHEMA_V14).execute(&mut *tx).await?;
+        sqlx::raw_sql("PRAGMA user_version = 14").execute(&mut *tx).await?;
         tx.commit().await?;
     }
     Ok(())
@@ -509,7 +569,7 @@ pub async fn any_channel_row(pool: &SqlitePool, id: i64) -> sqlx::Result<Option<
 }
 
 /// Channels the user can see, ordered by category position, then channel position.
-pub async fn list_channels(pool: &SqlitePool, user_perms: u64) -> sqlx::Result<Vec<ChannelOut>> {
+pub async fn list_channels(pool: &SqlitePool, user_id: i64, user_perms: u64) -> sqlx::Result<Vec<ChannelOut>> {
     if !perms::has(user_perms, perms::VIEW_CHANNEL) {
         return Ok(Vec::new());
     }
@@ -519,7 +579,41 @@ pub async fn list_channels(pool: &SqlitePool, user_perms: u64) -> sqlx::Result<V
     )
     .fetch_all(pool)
     .await?;
-    Ok(rows.iter().map(|c| ChannelOut::new(c, user_perms)).collect())
+    let mut out = Vec::with_capacity(rows.len());
+    for ch in rows {
+        out.push(ChannelOut::new(&ch, channel_perms(pool, user_id, user_perms, &ch).await?));
+    }
+    Ok(out)
+}
+
+/// Channel rules affect posting, uploads and reactions; visibility and moderation stay server-wide.
+pub async fn channel_perms(pool: &SqlitePool, user_id: i64, base: u64, ch: &ChannelRow) -> sqlx::Result<u64> {
+    if perms::has(base, perms::ADMINISTRATOR) || ch.kind == "dm" {
+        return Ok(base);
+    }
+    let rows: Vec<(i64, bool, i64, i64)> = sqlx::query_as(
+        "SELECT o.channel_id, r.is_default, o.allow, o.deny FROM channel_overwrites o JOIN roles r ON r.id = o.role_id \
+         WHERE o.channel_id IN (?, ?) AND (r.is_default = 1 OR EXISTS (SELECT 1 FROM member_roles mr WHERE mr.role_id = r.id AND mr.user_id = ?))",
+    )
+    .bind(ch.parent_id.unwrap_or(ch.id))
+    .bind(ch.id)
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+    let mut effective = base;
+    for cid in ch.parent_id.into_iter().chain(std::iter::once(ch.id)) {
+        let mut default = (0, 0);
+        let mut role_rules = Vec::new();
+        for (_, everyone, allow, deny) in rows.iter().filter(|r| r.0 == cid) {
+            if *everyone {
+                default = (*allow as u64, *deny as u64);
+            } else {
+                role_rules.push((*allow as u64, *deny as u64));
+            }
+        }
+        effective = perms::overwritten(effective, default, &role_rules);
+    }
+    Ok(effective)
 }
 
 async fn member_role_map(pool: &SqlitePool, user_id: Option<i64>) -> sqlx::Result<HashMap<i64, Vec<String>>> {
@@ -540,6 +634,7 @@ fn member_out(srv: &ServerCtx, u: &UserRow, roles: &mut HashMap<i64, Vec<String>
         role_ids: roles.remove(&u.id).unwrap_or_default(),
         joined_at: ts(u.created_at),
         online: srv.is_online(u.id),
+        status: if srv.is_online(u.id) { u.status.clone() } else { "offline".into() },
         is_owner: owner == Some(u.id),
         timed_out_until: u.timed_out_until.filter(|t| *t > now_ms()).map(ts),
     }
@@ -567,6 +662,8 @@ pub async fn member(srv: &ServerCtx, user_id: i64) -> sqlx::Result<Option<Member
 }
 
 pub const MESSAGE_SELECT: &str = "SELECT m.id, m.channel_id, m.content, m.created_at, m.edited_at, m.reply_to, m.mention_everyone, \
+     EXISTS(SELECT 1 FROM message_pins pin WHERE pin.message_id = m.id) AS pinned, \
+     (SELECT th.id FROM channels th WHERE th.root_message_id = m.id) AS thread_id, \
      u.id AS author_id, u.username, u.display_name, u.avatar_url \
      FROM messages m JOIN users u ON u.id = m.author_id";
 

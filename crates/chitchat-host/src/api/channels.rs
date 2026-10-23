@@ -162,8 +162,21 @@ pub async fn create_channel(auth: Auth, Body(req): Body<CreateChannelReq>) -> Ap
         Some(p) => p,
         None => sqlx::query_scalar("SELECT COALESCE(MAX(position) + 1, 0) FROM channels WHERE category_id IS ?").bind(category_id).fetch_one(&auth.srv.db).await?,
     };
-    let row =
-        ChannelRow { id: next_id(), kind: req.kind, name, topic: req.topic.trim().to_string(), category_id, position, media_allowed: false, user_limit, dm_a: None, dm_b: None };
+    let row = ChannelRow {
+        id: next_id(),
+        kind: req.kind,
+        name,
+        topic: req.topic.trim().to_string(),
+        category_id,
+        position,
+        media_allowed: false,
+        user_limit,
+        dm_a: None,
+        dm_b: None,
+        parent_id: None,
+        root_message_id: None,
+        archived: false,
+    };
     sqlx::query("INSERT INTO channels (id, type, name, topic, category_id, position, media_allowed, user_limit) VALUES (?, ?, ?, ?, ?, ?, 0, ?)")
         .bind(row.id)
         .bind(&row.kind)
@@ -188,6 +201,7 @@ pub struct PatchChannelReq {
     position: Option<i64>,
     media_allowed: Option<bool>,
     user_limit: Option<i64>,
+    archived: Option<bool>,
 }
 
 /// Lets `"category_id": null` deserialize as `Some(Value::Null)` instead of `None`.
@@ -221,33 +235,65 @@ pub async fn patch_channel(auth: Auth, Path(p): Path<IdPath>, Body(req): Body<Pa
         row.position = pos;
     }
     if let Some(m) = req.media_allowed {
+        if m && let Some(parent) = row.parent_id {
+            let allowed: bool = sqlx::query_scalar("SELECT media_allowed FROM channels WHERE id = ?").bind(parent).fetch_one(&auth.srv.db).await?;
+            if !allowed {
+                return Err(ApiError::forbidden("media_not_allowed", "Allow media in the parent channel first."));
+            }
+        }
         row.media_allowed = m;
+    }
+    if let Some(archived) = req.archived {
+        if row.parent_id.is_none() {
+            return Err(ApiError::bad_request("Only threads can be archived."));
+        }
+        row.archived = archived;
     }
     if let Some(l) = req.user_limit {
         row.user_limit = check_user_limit(l).map_err(|e| one_field("user_limit", e))?;
     }
-    sqlx::query("UPDATE channels SET name = ?, topic = ?, category_id = ?, position = ?, media_allowed = ?, user_limit = ? WHERE id = ?")
+    sqlx::query("UPDATE channels SET name = ?, topic = ?, category_id = ?, position = ?, media_allowed = ?, user_limit = ?, archived = ? WHERE id = ?")
         .bind(&row.name)
         .bind(&row.topic)
         .bind(row.category_id)
         .bind(row.position)
         .bind(row.media_allowed)
         .bind(row.user_limit)
+        .bind(row.archived)
         .bind(row.id)
         .execute(&auth.srv.db)
         .await?;
+    if req.media_allowed == Some(false) && row.parent_id.is_none() {
+        sqlx::query("UPDATE channels SET media_allowed = 0 WHERE parent_id = ?").bind(row.id).execute(&auth.srv.db).await?;
+        let children: Vec<ChannelRow> = sqlx::query_as("SELECT * FROM channels WHERE parent_id = ?").bind(row.id).fetch_all(&auth.srv.db).await?;
+        for child in children {
+            auth.srv.emit(Event::channel("channel_update", ChannelOut::new(&child, 0), child.id));
+        }
+    }
     auth.srv.emit(Event::channel("channel_update", ChannelOut::new(&row, 0), row.id));
-    Ok(Json(ChannelOut::new(&row, auth.perms)))
+    Ok(Json(ChannelOut::new(&row, db::channel_perms(&auth.srv.db, auth.user.id, auth.perms, &row).await?)))
 }
 
 pub async fn delete_channel(auth: Auth, Path(p): Path<IdPath>) -> ApiResult<StatusCode> {
     auth.require(MANAGE_CHANNELS)?;
     let id = parse_id(&p.id, "unknown_channel")?;
+    let children: Vec<i64> = sqlx::query_scalar("SELECT id FROM channels WHERE parent_id = ?").bind(id).fetch_all(&auth.srv.db).await?;
+    let row = db::channel_row(&auth.srv.db, id).await?;
     let deleted = sqlx::query("DELETE FROM channels WHERE id = ? AND type != 'dm'").bind(id).execute(&auth.srv.db).await?;
     if deleted.rows_affected() == 0 {
         return Err(ApiError::not_found("unknown_channel", "No such channel."));
     }
     auth.srv.emit(Event::new("channel_delete", json!({ "id": id.to_string() })).in_channel(id));
+    for child in children {
+        auth.srv.emit(Event::new("channel_delete", json!({"id":child.to_string()})).in_channel(child));
+    }
+    if let Some(row) = row
+        && let (Some(parent), Some(root)) = (row.parent_id, row.root_message_id)
+        && let Some(message) = db::message_row(&auth.srv.db, parent, root).await?
+    {
+        let out = db::messages_out(&auth.srv, &[message], 0).await?.remove(0);
+        auth.srv.emit(Event::new("message_update", out).in_channel(parent));
+    }
     // Anyone in that voice room drops out (their sockets clear their voice state).
     if let Some(sfu) = crate::voice::sfu() {
         for s in auth.srv.voice.lock().unwrap().values().filter(|s| s.channel_id == id) {

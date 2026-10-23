@@ -252,3 +252,32 @@ systemctl --user start chitchat
 **Limit:** snapshots on the same disk don't survive a disk failure or a stolen laptop. Copy `~/chitchat-backups` to another device now and then (an external drive, or `rsync -aH` to another machine you control); `-H` keeps the hard links so the copy stays small.
 
 Password recovery tooling remains future work.
+
+## Updating
+
+Hosts update from ChitChat's GitHub releases (`host-vX.Y.Z`); no reinstall is needed.
+
+- **From the browser:** the host admin (owner of the first community) sees **Resources → Updates**. When a new version exists it shows what changed and an **Update now** button. Everyone is disconnected for about a minute while the host restarts, then reconnects by itself.
+- **From the command line**, with the host stopped: `chitchat-host --data-dir <data> update --web-dir <web dir>` (`--check` only says whether there is one). Then start the host as usual.
+
+Each update is checked against ChitChat's signing key before anything is unpacked, and every community's database is copied to `<data>/update/backups/` first. The new binary and web client replace the old ones, which are kept next to them as `.old`. If the new version fails to start three times in a row, the old binary, web client and databases are put back and the old version starts again; the Updates card says what happened.
+
+The host restarts itself: under systemd it exits with code 75, so the unit needs `Restart=on-failure` (or `always`), as in this user service:
+
+```ini
+# ~/.config/systemd/user/chitchat.service
+[Unit]
+Description=ChitChat host
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/chitchat
+ExecStart=%h/chitchat/chitchat-host --data-dir %h/chitchat/data run --bind 0.0.0.0:8443 --web-dir %h/chitchat/web --https
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+```
+
+Without systemd (for example started by hand on Windows), the host starts the new version itself. The user running the host must be able to write to the binary's and web client's folders.

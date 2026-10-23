@@ -97,6 +97,34 @@ fn thumbnail(img: &DynamicImage) -> Vec<u8> {
     encode_webp(&img.thumbnail(THUMB_SIDE, THUMB_SIDE), THUMB_QUALITY)
 }
 
+/// Avatars are always a still WebP, including the first frame of GIF/WebP animations.
+/// Tighter decode limits keep small compressed images from allocating excessive memory.
+pub fn process_avatar(bytes: &[u8]) -> Result<Vec<u8>, MediaError> {
+    process_small_picture(bytes, 256)
+}
+
+pub fn process_emoji(bytes: &[u8]) -> Result<Vec<u8>, MediaError> {
+    process_small_picture(bytes, 128)
+}
+
+fn process_small_picture(bytes: &[u8], side: u32) -> Result<Vec<u8>, MediaError> {
+    let format = image::guess_format(bytes).map_err(|_| MediaError::Unsupported)?;
+    if !matches!(format, ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::Gif | ImageFormat::WebP) {
+        return Err(MediaError::Unsupported);
+    }
+    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(4096);
+    limits.max_image_height = Some(4096);
+    limits.max_alloc = Some(64 * 1024 * 1024);
+    reader.limits(limits);
+    let mut img = reader.decode().map_err(|_| MediaError::Broken)?;
+    if format == ImageFormat::Jpeg {
+        img = apply_exif_orientation(img, bytes);
+    }
+    Ok(encode_webp(&img.thumbnail(side, side), IMAGE_QUALITY))
+}
+
 /// Processes an image (CPU heavy: call from `spawn_blocking`).
 /// Still images are re-encoded as WebP: smaller files, and no hidden metadata survives.
 /// Animated GIF/WebP are kept as they are (they carry no camera/GPS data) with a still thumbnail.

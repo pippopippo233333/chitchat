@@ -1,16 +1,20 @@
 import { randomId } from './random';
-export interface User { id: string; username: string; display_name: string; avatar_url: string | null; created_at?: string }
+export interface User { id: string; username: string; display_name: string; avatar_url: string | null; created_at?: string; status?: 'online' | 'away'; status_text?: string }
 export interface ServerSummary { slug: string; name: string; description: string; icon_url: string | null; requires_password: boolean; invite_only: boolean; registration_open: boolean; voice_messages?: boolean }
 export interface Server extends ServerSummary { id: string; owner_id: string; created_at: string }
 export interface HostInfo { name: string; version: string; servers: ServerSummary[] }
 export interface Category { id: string; name: string; position: number }
-export interface Channel { id: string; type: 'text' | 'voice' | 'dm'; name: string; topic: string; category_id: string | null; position: number; media_allowed: boolean; my_permissions: string; user_limit?: number }
+export interface Channel { id: string; type: 'text' | 'voice' | 'dm'; name: string; topic: string; category_id: string | null; position: number; media_allowed: boolean; my_permissions: string; user_limit?: number; parent_id?: string | null; root_message_id?: string | null; archived?: boolean }
 export interface VoiceState { user_id: string; channel_id: string; session_id: string; self_mute: boolean; self_deaf: boolean; suppressed: boolean; streaming: boolean }
-export interface Member { user: User; role_ids: string[]; joined_at: string; online: boolean; is_owner: boolean; timed_out_until?: string | null }
+export interface Member { user: User; role_ids: string[]; joined_at: string; online: boolean; is_owner: boolean; timed_out_until?: string | null; status?: 'online' | 'away' | 'offline' }
 export interface Role { id: string; name: string; color: string; position: number; permissions: string; is_default: boolean }
 export interface Reaction { emoji: string; count: number; me: boolean }
 export interface Attachment { id: string; filename: string; kind: 'image' | 'video' | 'audio' | 'file'; duration_ms?: number | null; voice?: boolean; mime: string; size: number; width: number | null; height: number | null; url: string; thumbnail_url: string | null }
-export interface Message { mentions?:string[];mention_roles?:string[];mention_everyone?:boolean;mention_here?:boolean; id: string; channel_id: string; author: User; content: string; created_at: string; edited_at: string | null; reply_to: string | null; reactions: Reaction[]; attachments: Attachment[]; nonce?: string }
+export interface Message { mentions?:string[];mention_roles?:string[];mention_everyone?:boolean;mention_here?:boolean; id: string; channel_id: string; author: User; content: string; created_at: string; edited_at: string | null; reply_to: string | null; pinned?: boolean; thread_id?: string | null; reactions: Reaction[]; attachments: Attachment[]; nonce?: string }
+export interface CustomEmoji { id: string; name: string; url: string }
+export interface PinnedMessage { message: Message; pinned_by: string; pinned_at: string }
+export interface ChannelRule { role_id: string; allow: string; deny: string }
+export interface ChannelRules { inherited_from: string | null; overwrites: ChannelRule[] }
 export interface Settings { name: string; description: string; has_password: boolean; invite_only: boolean; registration_open: boolean; listed: boolean; discoverable?: boolean; voice_messages?: boolean; ip_mode: 'off' | 'allowlist'; max_file_mb: number; user_daily_mb: number; user_total_mb: number; server_total_mb: number; media_retention_days: number; storage_used_bytes: number; new_account_restrict_hours: number; max_accounts_per_ip: number; spam_messages_per_5s: number; spam_chars_per_minute: number; spam_max_repeats: number; spam_timeout_minutes: number }
 export interface Invite { code: string; creator_id: string; max_uses: number | null; uses: number; expires_at: string | null; created_at: string }
 export interface InvitePreview { code: string; server: ServerSummary; expires_at: string | null; uses_left: number | null }
@@ -18,7 +22,7 @@ export interface IpRule { id: string; cidr: string; action: 'allow' | 'block'; n
 export interface Ban { id: string; user: User | null; reason: string; ip_banned: boolean; device_banned: boolean; ips?: string[]; created_by: string; created_at: string; expires_at: string | null }
 export interface AuditEntry { id: string; actor_id: string | null; action: string; target_id: string | null; details: Record<string, unknown>; created_at: string }
 export interface StorageUsage { used_today_bytes: number; used_total_bytes: number; max_file_mb: number; user_daily_mb: number; user_total_mb: number; exempt: boolean }
-export interface Snapshot { user: User; is_owner: boolean; permissions: string; server: Server; categories: Category[]; channels: Channel[]; members: Member[]; roles: Role[]; read_states?:ReadState[];preferences?:NotificationPreferences;dms?:DirectMessage[]; voice_states?: VoiceState[]; ai_moderation?: AiNotice | null }
+export interface Snapshot { user: User; is_owner: boolean; permissions: string; server: Server; categories: Category[]; channels: Channel[]; members: Member[]; roles: Role[]; emojis?: CustomEmoji[]; read_states?:ReadState[];preferences?:NotificationPreferences;dms?:DirectMessage[]; voice_states?: VoiceState[]; ai_moderation?: AiNotice | null }
 export interface AuthResult { token: string; user: User }
 export interface Credentials { username: string; password: string; device_id: string; display_name?: string; server_password?: string; invite_code?: string; setup_code?: string }
 

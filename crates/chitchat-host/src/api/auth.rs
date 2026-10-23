@@ -177,6 +177,8 @@ pub async fn register(Srv(srv): Srv, ConnectInfo(addr): ConnectInfo<SocketAddr>,
         display_name,
         password_hash,
         avatar_url: None,
+        status: "online".into(),
+        status_text: String::new(),
         created_at: now_ms(),
         timed_out_until: None,
         signup_ip: Some(crate::ipfilter::normalize(addr.ip()).to_string()),
@@ -287,6 +289,8 @@ pub struct PasswordChange {
 pub struct PatchMeReq {
     display_name: Option<String>,
     password: Option<PasswordChange>,
+    status: Option<String>,
+    status_text: Option<String>,
 }
 
 pub async fn patch_me(auth: Auth, Body(req): Body<PatchMeReq>) -> ApiResult<Json<UserOut>> {
@@ -297,6 +301,14 @@ pub async fn patch_me(auth: Auth, Body(req): Body<PatchMeReq>) -> ApiResult<Json
     };
     if let Some(p) = &req.password {
         let _ = check_password(&p.new).map_err(|e| fields.insert("password", e));
+    }
+    if req.status.as_deref().is_some_and(|s| !matches!(s, "online" | "away")) {
+        fields.insert("status", "invalid");
+    }
+    if let Some(text) = &req.status_text
+        && (text.chars().count() > 128 || text.chars().any(char::is_control))
+    {
+        fields.insert("status_text", "invalid");
     }
     if !fields.is_empty() {
         return Err(ApiError::validation(fields));
@@ -322,12 +334,21 @@ pub async fn patch_me(auth: Auth, Body(req): Body<PatchMeReq>) -> ApiResult<Json
     if let Some(d) = &display_name {
         sqlx::query("UPDATE users SET display_name = ? WHERE id = ?").bind(d).bind(auth.user.id).execute(&auth.srv.db).await?;
     }
+    if let Some(status) = &req.status {
+        sqlx::query("UPDATE users SET status = ? WHERE id = ?").bind(status).bind(auth.user.id).execute(&auth.srv.db).await?;
+    }
+    if let Some(text) = &req.status_text {
+        sqlx::query("UPDATE users SET status_text = ? WHERE id = ?").bind(text.trim()).bind(auth.user.id).execute(&auth.srv.db).await?;
+    }
 
     let user = db::user_by_id(&auth.srv.db, auth.user.id).await?.ok_or_else(ApiError::internal)?;
-    if display_name.is_some()
+    if (display_name.is_some() || req.status.is_some() || req.status_text.is_some())
         && let Some(m) = db::member(&auth.srv, user.id).await?
     {
         auth.srv.emit(Event::new("member_update", m));
+    }
+    if req.status.is_some() {
+        auth.srv.emit(super::profile::presence_event(&auth.srv, &user));
     }
     Ok(Json(UserOut::from(&user)))
 }

@@ -674,6 +674,111 @@ Hosts that turn discovery on publish their **discoverable** servers and the othe
 **Between hosts (not for the client):** `GET /api/discovery` (this host's document: `{ version, name, url, servers, peers }`) and `POST /api/discovery/announce { url }` (`202`; the host checks that `url` really answers as itself before listing it; one announce per IP per minute).
 - Safety: only `https://` hosts on public IP addresses are fetched (never LAN addresses), no redirects, answers over 512 KB are dropped, at most 50 servers per host and 500 hosts; text is trimmed. Hosts that don't answer for 7 days are forgotten.
 
+## 4m. Profiles and status
+
+Profiles belong to the current server. `User` adds `status` (`online` or `away`, the saved
+preference) and `status_text` (plain text, up to 128 characters; empty clears it). `Member`
+adds `status` (`online`, `away`, or `offline`), combining that preference with live connections.
+The existing `Member.online` remains true for both online and away members. Disconnecting
+the last socket makes a member offline; reconnecting restores their preference.
+
+`PATCH /me` also accepts `{status?, status_text?}` alongside the existing display name/password
+fields. Invalid status, control characters or an overlong status text return validation errors.
+Changes broadcast `member_update`; status changes also broadcast
+`presence_update {user_id, online, status}`. Apply profile changes to your own cached user,
+member list, message authors and DM counterparts as well.
+
+- `PUT /me/avatar`: raw image body, at most **2 MiB**, PNG/JPEG/GIF/WebP, at most 4096 pixels
+  per side. Returns the updated `User`. Type is detected from content. Re-encoded as a still
+  WebP up to 256x256 (first frame for animation), stripping metadata and applying JPEG orientation.
+  Timed-out members cannot upload. Errors: `413 too_large`, `415 unsupported_media`,
+  `413 server_storage_full` when there is no room under the existing storage policy.
+- `DELETE /me/avatar`: returns updated `User` with `avatar_url: null`.
+- `avatar_url` is a server-relative opaque image URL; resolve against the connected host and
+  use directly in `img`. It is publicly fetchable by anyone who possesses the URL (IP rules
+  still apply). Changed pictures get a new content URL. Only the current picture is retained
+  in SQLite, included in backups and counted toward server file storage. Replacing/removing
+  a picture broadcasts `member_update`.
+
+## 4n. Pinned messages, threads and posting rules
+
+`Message` adds `pinned: bool` and `thread_id: string|null` (the child conversation started
+from this message, if any). `Channel` adds `parent_id`, `root_message_id` (both nullable IDs),
+and `archived: bool`. A thread is a **text channel** with a parent, not a separate message API.
+Include it in snapshots, search, unread tracking and notifications; display it under its parent
+instead of as another top-level text channel. Its existing `my_permissions` is the current
+user's effective permission mask, including posting rules below.
+
+### Pins
+
+- `GET /channels/{id}/pins` -> `[{message: Message, pinned_by, pinned_at}]`, newest pins first.
+- `PUT /channels/{id}/pins/{message_id}` -> 204 (idempotent). At most 50 pins per conversation;
+  beyond that, 409 `too_many_pins`. Server channels/threads require `MANAGE_MESSAGES`;
+  either DM participant can pin in their own DM. Timed-out users cannot pin or unpin.
+- `DELETE /channels/{id}/pins/{message_id}` -> 204, same permissions.
+- Event `pin_update {channel_id, message_id, pinned, pinned_by?, pinned_at?}` is scoped to the
+  channel (only its participants in DMs). Deleting the message automatically removes its pin.
+
+### Threads
+
+- `POST /channels/{id}/messages/{message_id}/thread {name?}` -> 201 `Channel`, or 200 for an
+  existing thread on that message. Requires effective `SEND_MESSAGES`, not timed out, in a
+  server text channel. No nested threads or DM threads. Name defaults to the message preview.
+  At most 100 threads per parent and 1000 per server; 409 `too_many_threads` if full.
+- `GET /channels/{id}/threads` -> `Channel[]`, including archived threads.
+- Normal `/channels/{thread_id}/messages`, uploads, pins, reactions, search and acknowledgements
+  work as usual. Media starts with the parent's setting; disabling media on the parent disables
+  it in its threads too. It cannot be enabled in a thread while disabled on the parent.
+- `PATCH /channels/{thread_id} {archived: true|false}` requires `MANAGE_CHANNELS`.
+  Archived threads reject new messages/uploads with 403 `thread_archived`; history stays visible.
+  Rename/delete use existing channel endpoints and permissions.
+- Events: existing `channel_create/update/delete`; starting/deleting a thread also updates the
+  root `Message.thread_id`. Deleting a root message retains the thread with a null root;
+  deleting a parent channel deletes its threads and broadcasts their deletion events.
+- A thread inherits its parent's AI moderation coverage; changing the conversation does not
+  bypass checks. The AI notice must consider `parent_id` as well as the active channel ID.
+
+### Role posting rules
+
+Rules override **SEND_MESSAGES (2), ATTACH_FILES (128), ADD_REACTIONS (256)** only. Visibility,
+DM access and moderation permissions stay server-wide. Owners and administrators bypass
+these posting rules. Editing own messages requires effective SEND_MESSAGES; uploading and
+sending attachments require effective ATTACH_FILES too, so old unsent uploads cannot bypass
+a rule that changed in the meantime.
+
+- `GET /channels/{id}/permissions` -> `{inherited_from: parent_id|null, overwrites:
+  [{role_id, allow: "mask", deny: "mask"}]}`. Missing role/bit = inherit.
+- `PUT /channels/{id}/permissions/{role_id} {allow: "mask", deny: "mask"}` -> 204.
+  A bit cannot be in both masks; unsupported bits are rejected.
+- `DELETE /channels/{id}/permissions/{role_id}` -> 204, reset that role to inheritance.
+- Setting/resetting requires `MANAGE_ROLES`. Non-owners can only edit roles below their highest
+  role (plus @everyone), and cannot grant permissions they lack. Rules apply to server text
+  channels and threads, not DMs.
+- Resolve parent rules first, then thread rules. At each level apply @everyone's deny/allow,
+  then combine the member's other role denies/allows (an explicit allow wins across roles).
+  Example: deny writing/files to @everyone, allow writing to Writers and uploads to Uploaders.
+- `permissions_update` now includes `channel_permissions: {channel_id: "effective_mask"}`.
+  Apply those masks after updating server-wide permissions; never replace every channel's
+  mask with the global value. Role/rule changes refresh these masks on every open connection.
+
+## 4o. Custom server emoji
+
+- `GET /emojis` -> `[{id, name, url}]`. Also sent as `ready.emojis`.
+- `POST /emojis?name=party_time`, raw PNG/JPEG/GIF/WebP body, at most 256 KiB and 4096 pixels
+  per side. Requires `MANAGE_SERVER`, not timed out. Returns 201 `{id,name,url}`. Saved as a
+  still WebP up to 128x128, with metadata removed. Names are normalized to lowercase and need
+  2-32 ASCII letters, digits or underscores. At most 100 emoji per server.
+- `DELETE /emojis/{id}` -> 204, requires `MANAGE_SERVER`.
+- Errors: `413 too_large`, `415 unsupported_media`, `409 emoji_name_taken`, `409 too_many_emojis`,
+  and the existing server-storage errors. Images count toward file storage and are kept in
+  the SQLite backup. URLs are public opaque server-relative image links, like profile pictures.
+- Events `emoji_create {id,name,url}`, `emoji_delete {id}` update the cached list.
+- Reactions use `custom:ID` as the existing `emoji` path component. The server verifies that
+  the ID belongs to this server; removing a reaction remains possible after its emoji is removed.
+- In message text use `<:name:ID>`; the client renders valid IDs using the server emoji list.
+  Unknown/deleted IDs show a plain text placeholder. Never build image URLs from arbitrary
+  message text. Only use validated URLs from the current server's list.
+
 ## 5. WebSocket: `GET /s/{slug}/api/ws`
 
 All frames are JSON text: `{ "type": "…", "data": { … } }`.
@@ -717,13 +822,13 @@ All frames are JSON text: `{ "type": "…", "data": { … } }`.
 | `category_delete` | `{ id }` |
 | `member_join` / `member_update` | `Member` |
 | `member_leave` | `{ user_id }` |
-| `presence_update` | `{ user_id, online }` |
+| `presence_update` | `{ user_id, online, status }` (`status`: `online`, `away`, or `offline`) |
 | `role_create` / `role_update` | `Role` |
 | `role_delete` | `{ id }` |
 | `server_update` | `Server` |
 | `voice_state_update` · `voice_speaking` · `voice_sdp` · `voice_end` | see section 4e |
 | `ai_notice_update` · `ai_flag_create` · `ai_flag_update` | see section 4f |
-| `permissions_update` | `{ permissions, is_owner }`: **your own** server-wide permissions changed (a role edit, or a role given to or taken from you). Use it as every channel's `my_permissions` too (Phase 2 has no per-channel overrides yet). |
+| `permissions_update` | `{ permissions, is_owner }`: **your own** server-wide permissions changed (a role edit, or a role given to or taken from you). Apply the accompanying `channel_permissions` map to each channel (4n); older hosts without that map use the global mask. |
 
 In events, `Message.reactions[].me` is always `false` (one payload goes to everyone); keep your own reaction state from REST responses and `reaction_add`/`reaction_remove` events with your `user_id`.
 

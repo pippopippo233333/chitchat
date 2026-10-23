@@ -27,6 +27,16 @@ pub const MENTION_EVERYONE: u64 = 1 << 15;
 pub const SEND_DMS: u64 = 1 << 16;
 
 pub const ALL: u64 = (1 << 17) - 1;
+pub const CHANNEL_OVERRIDES: u64 = SEND_MESSAGES | ATTACH_FILES | ADD_REACTIONS;
+
+/// Apply @everyone first; across the member's other roles, an explicit allow wins a deny.
+pub fn overwritten(base: u64, everyone: (u64, u64), roles: &[(u64, u64)]) -> u64 {
+    if base & ADMINISTRATOR != 0 {
+        return base;
+    }
+    let (allow, deny) = roles.iter().fold((0, 0), |(a, d), (ra, rd)| (a | ra, d | rd));
+    (((base & !(everyone.1 & CHANNEL_OVERRIDES)) | (everyone.0 & CHANNEL_OVERRIDES)) & !(deny & CHANNEL_OVERRIDES)) | (allow & CHANNEL_OVERRIDES)
+}
 
 /// What `@everyone` gets on a new server: VIEW + SEND + ADD_REACTIONS + CONNECT_VOICE + SPEAK + SEND_DMS = 78083.
 pub const DEFAULT_EVERYONE: u64 = VIEW_CHANNEL | SEND_MESSAGES | ADD_REACTIONS | CONNECT_VOICE | SPEAK | SEND_DMS;
@@ -52,5 +62,19 @@ mod tests {
         assert!(!has(DEFAULT_EVERYONE, MANAGE_CHANNELS));
         assert!(has(effective(DEFAULT_EVERYONE, true), MANAGE_CHANNELS));
         assert_eq!(effective(ADMINISTRATOR, false), ALL);
+    }
+
+    #[test]
+    fn channel_rules_apply_defaults_then_roles_without_granting_admin() {
+        let base = VIEW_CHANNEL | SEND_MESSAGES | ADD_REACTIONS;
+        let restricted = overwritten(base, (0, SEND_MESSAGES | ATTACH_FILES), &[]);
+        assert!(!has(restricted, SEND_MESSAGES));
+        let writer = overwritten(base, (0, SEND_MESSAGES | ATTACH_FILES), &[(SEND_MESSAGES, 0)]);
+        assert!(has(writer, SEND_MESSAGES));
+        assert!(!has(writer, ATTACH_FILES));
+        let both = overwritten(writer, (0, 0), &[(ATTACH_FILES, 0), (0, ATTACH_FILES)]);
+        assert!(has(both, ATTACH_FILES));
+        assert_eq!(overwritten(base, (ADMINISTRATOR, VIEW_CHANNEL), &[]), base);
+        assert_eq!(overwritten(ALL, (0, CHANNEL_OVERRIDES), &[]), ALL);
     }
 }

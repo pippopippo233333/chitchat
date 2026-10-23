@@ -14,6 +14,7 @@ mod perms;
 mod push;
 mod spam;
 mod tls;
+mod update;
 mod voice;
 
 use std::net::SocketAddr;
@@ -45,6 +46,19 @@ enum Cmd {
     /// Manage accounts (run on the host machine, e.g. when someone forgot their password).
     #[command(subcommand)]
     User(UserCmd),
+    /// Install the newest ChitChat host release (stop the host first). The dashboard has the same
+    /// as a button.
+    Update {
+        /// Only say whether there is one.
+        #[arg(long)]
+        check: bool,
+        /// The web client folder the host serves (as in `run --web-dir`).
+        #[arg(long, default_value = "web/dist")]
+        web_dir: PathBuf,
+        /// Check a release archive's signature (`<file>.sig`) and exit (used when publishing).
+        #[arg(long, hide = true)]
+        verify: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -119,6 +133,10 @@ enum ServerCmd {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,tower_http=warn".into())).init();
     let cli = Cli::parse();
+    // A new version on probation is counted (or rolled back) before it touches the databases.
+    if matches!(cli.cmd, None | Some(Cmd::Run(_))) {
+        update::on_start(&cli.data_dir).context("checking the last update")?;
+    }
     let host = Host::load(&cli.data_dir).await.context("loading the data directory")?;
 
     match cli.cmd.unwrap_or(Cmd::Run(RunArgs::default())) {
@@ -142,6 +160,8 @@ async fn main() -> Result<()> {
             println!("They should log in and change it in their settings.");
             Ok(())
         }
+        Cmd::Update { verify: Some(file), .. } => update::verify_file(&file),
+        Cmd::Update { check, web_dir, .. } => update::cli(&host, &web_dir, check).await,
         Cmd::Server(ServerCmd::List) => {
             let servers = host.servers.read().await;
             if servers.is_empty() {
@@ -202,6 +222,7 @@ async fn run(host: std::sync::Arc<Host>, args: RunArgs) -> Result<()> {
     discovery::start(host.clone());
     push::init(&host.data_dir, args.canonical_url.as_deref()).context("setting up web push")?;
     let data_dir = host.data_dir.clone();
+    let _ = update::WEB_DIR.set(args.web_dir.clone());
     let mut app = api::router(host, &args.web_dir);
     if let Some(url) = &args.canonical_url {
         app = api::with_canonical_redirect(app, url)?;
@@ -211,7 +232,21 @@ async fn run(host: std::sync::Arc<Host>, args: RunArgs) -> Result<()> {
         Some(t) => Some(tls::load(&t, &data_dir).await?),
         None => None,
     };
-    let listener = std::net::TcpListener::bind(&args.bind).with_context(|| format!("can't listen on {}", args.bind))?;
+    if tls.is_some() {
+        app = api::with_transport_security(app);
+    }
+    // After an update restart (no service manager), the old process may hold the port briefly.
+    let mut tries = if update::wait_for_port() { 40 } else { 1 };
+    let listener = loop {
+        match std::net::TcpListener::bind(&args.bind) {
+            Ok(l) => break l,
+            Err(_) if tries > 1 => {
+                tries -= 1;
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            Err(e) => return Err(e).with_context(|| format!("can't listen on {}", args.bind)),
+        }
+    };
     listener.set_nonblocking(true)?;
     let local = listener.local_addr()?;
     // Voice uses UDP on the same port number.
@@ -219,6 +254,7 @@ async fn run(host: std::sync::Arc<Host>, args: RunArgs) -> Result<()> {
         Ok(()) => tracing::info!("voice: UDP {local} (open this UDP port too for voice from other machines; networks that block UDP fall back to TCP on the same port)"),
         Err(e) => tracing::warn!("voice disabled: can't bind UDP {local}: {e}"),
     }
+    update::on_running(data_dir.clone());
     let service = app.into_make_service_with_connect_info::<SocketAddr>();
     let handle = axum_server::Handle::new();
     let h = handle.clone();

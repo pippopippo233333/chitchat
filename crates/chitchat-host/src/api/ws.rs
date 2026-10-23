@@ -92,8 +92,10 @@ async fn run(mut socket: WebSocket, srv: Arc<ServerCtx>, ip: IpAddr, host: Optio
     if socket.send(Message::Text(frame("ready", ready).into())).await.is_err() {
         return;
     }
-    if srv.connect(user_id) {
-        srv.emit(Event::new("presence_update", json!({ "user_id": user_id.to_string(), "online": true })));
+    if srv.connect(user_id)
+        && let Ok(Some(user)) = db::user_by_id(&srv.db, user_id).await
+    {
+        srv.emit(super::profile::presence_event(&srv, &user));
     }
     // A new connection counts as on screen until the page says otherwise (`visibility`).
     let mut visible = true;
@@ -132,11 +134,12 @@ async fn run(mut socket: WebSocket, srv: Arc<ServerCtx>, ip: IpAddr, host: Optio
             ev = rx.recv() => match ev {
                 Ok(ev) => {
                     if ev.refresh_perms {
-                        if let Ok((p, owner)) = db::user_perms(&srv.db, user_id).await
-                            && (p != auth.perms || owner != auth.is_owner) {
+                        if let Ok((p, owner)) = db::user_perms(&srv.db, user_id).await {
                                 auth.perms = p;
                                 auth.is_owner = owner;
-                                let update = frame("permissions_update", json!({ "permissions": p.to_string(), "is_owner": owner }));
+                                let channels = db::list_channels(&srv.db, user_id, p).await.unwrap_or_default();
+                                let channel_permissions: std::collections::BTreeMap<_, _> = channels.into_iter().map(|c| (c.id, c.my_permissions)).collect();
+                                let update = frame("permissions_update", json!({ "permissions": p.to_string(), "is_owner": owner, "channel_permissions": channel_permissions }));
                                 if socket.send(Message::Text(update.into())).await.is_err() {
                                     break;
                                 }
@@ -178,7 +181,13 @@ async fn run(mut socket: WebSocket, srv: Arc<ServerCtx>, ip: IpAddr, host: Optio
                         EventKind::Frame(s) => s.clone(),
                         EventKind::Channel { ty, channel } => {
                             let mut c = channel.clone();
-                            c.my_permissions = auth.perms.to_string();
+                            c.my_permissions = match crate::ids::parse(&c.id) {
+                                Some(id) => match db::channel_row(&srv.db, id).await {
+                                    Ok(Some(row)) => db::channel_perms(&srv.db, user_id, auth.perms, &row).await.unwrap_or(0),
+                                    _ => 0,
+                                },
+                                None => 0,
+                            }.to_string();
                             frame(ty, c)
                         }
                     };
@@ -223,8 +232,10 @@ async fn run(mut socket: WebSocket, srv: Arc<ServerCtx>, ip: IpAddr, host: Optio
     if visible {
         srv.set_watching(user_id, false);
     }
-    if srv.disconnect(user_id) {
-        srv.emit(Event::new("presence_update", json!({ "user_id": user_id.to_string(), "online": false })));
+    if srv.disconnect(user_id)
+        && let Ok(Some(user)) = db::user_by_id(&srv.db, user_id).await
+    {
+        srv.emit(super::profile::presence_event(&srv, &user));
     }
 }
 

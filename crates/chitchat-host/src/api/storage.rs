@@ -53,8 +53,22 @@ pub type Room<'a> = tokio::sync::MutexGuard<'a, Option<(Instant, i64)>>;
 /// deletes the oldest messages (and their files) or refuses. Keep the returned guard until the
 /// new data is written.
 pub async fn make_room(srv: &ServerCtx, incoming: i64) -> ApiResult<Room<'_>> {
+    reserve_room(srv, incoming, None).await
+}
+
+/// Measure the replaced picture while holding the same guard as all other storage writes.
+pub async fn make_avatar_room(srv: &ServerCtx, user_id: i64, incoming: i64) -> ApiResult<Room<'_>> {
+    reserve_room(srv, incoming, Some(user_id)).await
+}
+
+async fn reserve_room(srv: &ServerCtx, incoming: i64, avatar_owner: Option<i64>) -> ApiResult<Room<'_>> {
     // Also serializes pruning: only one request deletes at a time.
     let mut cache = srv.storage_used.lock().await;
+    let replaced = match avatar_owner {
+        Some(uid) => sqlx::query_scalar::<_, i64>("SELECT COALESCE((SELECT LENGTH(image) FROM user_avatars WHERE user_id = ?), 0)").bind(uid).fetch_one(&srv.db).await?,
+        None => 0,
+    };
+    let incoming = (incoming - replaced).max(0);
     let s = db::server_row(&srv.db).await?;
     if s.server_total_mb == 0 {
         return Ok(cache);

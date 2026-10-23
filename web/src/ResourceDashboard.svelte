@@ -6,6 +6,7 @@
   import { giga, ramMb } from './lib/resources';
   import ResourceGauge from './ResourceGauge.svelte';
   import BackupCard from './BackupCard.svelte';
+  import UpdateCard from './UpdateCard.svelte';
   export let api: Api;
   let resources: HostResources | null = null, storage: ServerStorage | null = null;
   let hostAdmin = true, polling = false, busy = false, loading = true, alive = true;
@@ -42,7 +43,7 @@
   onDestroy(() => { alive = false; abort.abort(); clearInterval(timer); });
 </script>
 <p class="small muted">Usage refreshes every four seconds while this dashboard is open. Storage belongs to this community; CPU and memory limits apply to the whole host. 1 GB here means 1,024 MB.</p>
-{#if hostAdmin}<BackupCard {api}/>{/if}
+{#if hostAdmin}<UpdateCard {api}/><BackupCard {api}/>{/if}
 {#if error}<div class="error" role="alert">{error}</div>{/if}{#if success}<p class="notice" role="status">{success}</p>{/if}
 {#if loading}<p role="status">Loading resource usage…</p>{/if}
 {#if storage}

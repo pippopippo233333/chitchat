@@ -4,6 +4,8 @@
   import type { Channel, Snapshot, VoiceState } from './lib/api';
   import { VoiceClient, secureVoiceAvailable, roomUploadMbps } from './lib/voice';
   import Icon from './Icon.svelte';
+  import Avatar from './Avatar.svelte';
+  export let origin = location.origin;
   import { panelHeight, readPreference, writePreference } from './lib/panels';
   import ScreenViewer from './ScreenViewer.svelte';
   export let panelScope = 'local';
@@ -79,7 +81,7 @@
     {#if selected && currentRoom && !joined}<p class="notice">You’re connected to {currentRoom.name}. Joining this room will move your voice connection.</p>{/if}
     {#if !secure}<p class="notice">Voice needs a secure (https://) connection to this host. You can still see who is in the room.</p>
     {:else if !joined && room}<button class="primary" disabled={!mayConnect || !connected || full} onclick={() => onJoin(room!)}>{full ? 'Room is full' : mayConnect ? 'Join voice' : 'Voice access required'}</button>{/if}
-    {#if selected}<div class="voice-people">{#each occupants as occupant}<div class="voice-person" class:is-speaking={isSpeaking(occupant.user_id)}><div class="avatar">{name(occupant.user_id).slice(0, 2).toUpperCase()}</div><strong>{name(occupant.user_id)}</strong><span>{occupant.suppressed ? 'Listen only' : occupant.self_deaf ? 'Deafened' : occupant.self_mute ? 'Muted' : isSpeaking(occupant.user_id) ? 'Speaking' : 'Listening'}{occupant.streaming ? ' · Sharing' : ''}</span></div>{:else}<p class="muted small">No one is here yet.</p>{/each}</div>{/if}
+    {#if selected}<div class="voice-people">{#each occupants as occupant}<div class="voice-person" class:is-speaking={isSpeaking(occupant.user_id)}><Avatar user={snapshot.members.find(member => member.user.id === occupant.user_id)?.user ?? {display_name:name(occupant.user_id)}} {origin}/><strong>{name(occupant.user_id)}</strong><span>{occupant.suppressed ? 'Listen only' : occupant.self_deaf ? 'Deafened' : occupant.self_mute ? 'Muted' : isSpeaking(occupant.user_id) ? 'Speaking' : 'Listening'}{occupant.streaming ? ' · Sharing' : ''}</span></div>{:else}<p class="muted small">No one is here yet.</p>{/each}</div>{/if}
     {#if $state.channelId && (joined || !selected)}
       {#if $state.microphoneNotice}<p class="notice" role="status">{$state.microphoneNotice}</p>{/if}
       {#if $state.suppressed}<p class="notice">You’re listening only while your voice is suppressed or timed out.</p>{/if}

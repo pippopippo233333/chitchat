@@ -44,7 +44,7 @@ async fn user_usage(srv: &ServerCtx, user_id: i64, since_ms: i64) -> sqlx::Resul
 
 /// Bytes on disk for the whole server (each identical file counted once).
 pub async fn server_usage(srv: &ServerCtx) -> sqlx::Result<i64> {
-    sqlx::query_scalar("SELECT COALESCE(SUM(size), 0) FROM blobs").fetch_one(&srv.db).await
+    sqlx::query_scalar("SELECT (SELECT COALESCE(SUM(size), 0) FROM blobs) + (SELECT COALESCE(SUM(LENGTH(image)), 0) FROM user_avatars) + (SELECT COALESCE(SUM(LENGTH(image)), 0) FROM custom_emojis)").fetch_one(&srv.db).await
 }
 
 #[derive(Deserialize)]
@@ -93,13 +93,17 @@ pub async fn upload(auth: Auth, Path(p): Path<ChanPath>, Query(q): Query<UploadQ
 async fn receive(auth: &Auth, p: &ChanPath, q: &UploadQuery, stream: &mut BodyDataStream, declared: Option<i64>) -> ApiResult<(StatusCode, Json<AttachmentOut>)> {
     // A text channel or one of the caller's direct messages (always open to files).
     let ch = super::messages::text_channel(auth, &p.id).await?;
+    super::conversations::check_open(&ch)?;
     if ch.kind == "dm" {
         auth.require(crate::perms::SEND_DMS)?;
     }
     if !ch.media_allowed {
         return Err(ApiError::forbidden("media_not_allowed", "Images and videos aren't allowed in this channel."));
     }
-    auth.require(ATTACH_FILES)?;
+    auth.require_in(&ch, ATTACH_FILES).await?;
+    if ch.kind != "dm" {
+        auth.require_in(&ch, crate::perms::SEND_MESSAGES).await?;
+    }
     super::moderation::check_not_timed_out(&auth.user)?;
     super::moderation::check_new_account(auth, true).await?;
     let srv = &auth.srv;

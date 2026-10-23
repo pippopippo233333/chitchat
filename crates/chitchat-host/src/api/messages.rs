@@ -179,7 +179,7 @@ async fn store_mentions(auth: &Auth, ch: &ChannelRow, message_id: i64, content: 
     Ok(())
 }
 
-async fn message(auth: &Auth, channel_id: i64, mid: &str) -> ApiResult<crate::models::MessageRow> {
+pub(super) async fn message(auth: &Auth, channel_id: i64, mid: &str) -> ApiResult<crate::models::MessageRow> {
     let mid = parse_id(mid, "unknown_message")?;
     db::message_row(&auth.srv.db, channel_id, mid).await?.ok_or_else(|| ApiError::not_found("unknown_message", "No such message."))
 }
@@ -218,10 +218,14 @@ pub struct SendReq {
 
 pub async fn create(auth: Auth, Path(p): Path<ChanPath>, Body(req): Body<SendReq>) -> ApiResult<(StatusCode, Json<MessageOut>)> {
     let ch = text_channel(&auth, &p.id).await?;
+    super::conversations::check_open(&ch)?;
     if ch.kind == "dm" {
         check_dm_send(&auth, &ch).await?;
     } else {
-        auth.require(SEND_MESSAGES)?;
+        auth.require_in(&ch, SEND_MESSAGES).await?;
+    }
+    if !req.attachment_ids.is_empty() {
+        auth.require_in(&ch, perms::ATTACH_FILES).await?;
     }
     let mut fields = BTreeMap::new();
     let attachments = super::files::check_for_message(&auth, ch.id, &req.attachment_ids).await?;
@@ -298,7 +302,7 @@ pub async fn create(auth: Auth, Path(p): Path<ChanPath>, Body(req): Body<SendReq
     auth.srv.emit(scoped(Event::new("message_create", &out), &ch));
     super::push::message_created(auth.srv.clone(), ch.clone(), out.clone());
     if ch.kind != "dm" {
-        crate::ai::submit(&auth.srv, crate::ai::Job { message_id: id, channel_id: ch.id, author_id: auth.user.id, content: content.clone() }, auth.is_owner);
+        crate::ai::submit(&auth.srv, crate::ai::Job { message_id: id, channel_id: ch.id, author_id: auth.user.id, content: content.clone() }, auth.is_owner, ch.parent_id);
     }
     Ok((StatusCode::CREATED, Json(out)))
 }
@@ -310,6 +314,9 @@ pub struct EditReq {
 
 pub async fn edit(auth: Auth, Path(p): Path<MsgPath>, Body(req): Body<EditReq>) -> ApiResult<Json<MessageOut>> {
     let ch = text_channel(&auth, &p.id).await?;
+    if ch.kind != "dm" {
+        auth.require_in(&ch, SEND_MESSAGES).await?;
+    }
     let msg = message(&auth, ch.id, &p.mid).await?;
     if msg.author_id != auth.user.id {
         return Err(ApiError::forbidden("forbidden", "You can only edit your own messages."));
@@ -328,7 +335,7 @@ pub async fn edit(auth: Auth, Path(p): Path<MsgPath>, Body(req): Body<EditReq>) 
     let broadcast = db::messages_out(&auth.srv, std::slice::from_ref(&row), 0).await?.remove(0);
     auth.srv.emit(scoped(Event::new("message_update", &broadcast), &ch));
     if ch.kind != "dm" {
-        crate::ai::submit(&auth.srv, crate::ai::Job { message_id: msg.id, channel_id: ch.id, author_id: auth.user.id, content: content.clone() }, auth.is_owner);
+        crate::ai::submit(&auth.srv, crate::ai::Job { message_id: msg.id, channel_id: ch.id, author_id: auth.user.id, content: content.clone() }, auth.is_owner, ch.parent_id);
     }
     Ok(Json(db::messages_out(&auth.srv, &[row], auth.user.id).await?.remove(0)))
 }
@@ -354,9 +361,16 @@ pub async fn delete(auth: Auth, Path(p): Path<MsgPath>) -> ApiResult<StatusCode>
 
 pub async fn react(auth: Auth, Path(p): Path<ReactPath>) -> ApiResult<StatusCode> {
     let ch = text_channel(&auth, &p.id).await?;
-    auth.require(ADD_REACTIONS)?;
+    auth.require_in(&ch, ADD_REACTIONS).await?;
     super::moderation::check_not_timed_out(&auth.user)?;
     check_emoji(&p.emoji)?;
+    if let Some(id) = p.emoji.strip_prefix("custom:") {
+        let id = parse_id(id, "invalid_emoji")?;
+        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM custom_emojis WHERE id = ?)").bind(id).fetch_one(&auth.srv.db).await?;
+        if !exists {
+            return Err(ApiError::bad_request("This emoji is no longer available on this server."));
+        }
+    }
     let msg = message(&auth, ch.id, &p.mid).await?;
     let distinct: i64 =
         sqlx::query_scalar("SELECT COUNT(DISTINCT emoji) FROM reactions WHERE message_id = ? AND emoji != ?").bind(msg.id).bind(&p.emoji).fetch_one(&auth.srv.db).await?;

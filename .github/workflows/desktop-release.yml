@@ -1,0 +1,141 @@
+name: Desktop (macOS and Linux)
+
+# Windows builds are made and published locally with scripts/release-desktop.py. When that
+# release is published, this adds macOS and Linux builds to it.
+#
+# Auto-update needs the updater signing key as the repository secret TAURI_SIGNING_PRIVATE_KEY
+# (the owner adds it; it is never stored in the repository). Without it the installers are still
+# attached, but those copies don't update themselves.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to add builds to (desktop-vX.Y.Z)"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-release-${{ github.event.release.tag_name || inputs.tag }}
+
+env:
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
+
+jobs:
+  build:
+    if: startsWith(github.event.release.tag_name || inputs.tag, 'desktop-v')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            platform: darwin-aarch64
+            bundles: app,dmg
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            platform: darwin-x86_64
+            bundles: app,dmg
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            platform: linux-x86_64
+            bundles: deb,appimage
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+      - name: Linux libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - run: npm ci --prefix web
+      - run: npm ci --prefix desktop
+      - name: Build
+        working-directory: desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::warning::No TAURI_SIGNING_PRIVATE_KEY secret: these builds won't update themselves."
+            npx tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          else
+            npx tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+          fi
+      - name: Collect files
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=dist-${{ matrix.platform }}; mkdir "$out"
+          bundle=desktop/src-tauri/target/${{ matrix.target }}/release/bundle
+          case "${{ matrix.platform }}" in
+            darwin-*)
+              arch=${{ matrix.platform }}; arch=${arch#darwin-}
+              for f in "$bundle"/dmg/*.dmg; do cp "$f" "$out/ChitChat_macOS_${arch}.dmg"; done
+              # The updater downloads the .app.tar.gz (only made when signing).
+              for f in "$bundle"/macos/*.app.tar.gz; do [ -e "$f" ] && cp "$f" "$out/ChitChat_macOS_${arch}.app.tar.gz" && cp "$f.sig" "$out/ChitChat_macOS_${arch}.app.tar.gz.sig"; done
+              ;;
+            linux-*)
+              cp "$bundle"/deb/*.deb "$out/"
+              cp "$bundle"/appimage/*.AppImage "$out/"
+              for f in "$bundle"/appimage/*.AppImage.sig; do [ -e "$f" ] && cp "$f" "$out/"; done
+              ;;
+          esac
+          ls -l "$out"
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" dist-${{ matrix.platform }}/* --clobber -R "${{ github.repository }}"
+
+  # One job edits latest.json, after every build, so updates of it never race.
+  updater:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Add macOS and Linux to latest.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir rel && cd rel
+          gh release download "$TAG" -R "$REPO" -p 'latest.json' -p '*.sig'
+          ls -l
+          python3 - <<'EOF'
+          import json, os, pathlib
+          repo, tag = os.environ["REPO"], os.environ["TAG"]
+          latest = json.loads(pathlib.Path("latest.json").read_text())
+          files = {
+              "darwin-aarch64": "ChitChat_macOS_aarch64.app.tar.gz",
+              "darwin-x86_64": "ChitChat_macOS_x86_64.app.tar.gz",
+              "linux-x86_64": next((p.name[:-4] for p in pathlib.Path().glob("*.AppImage.sig")), None),
+          }
+          added = []
+          for platform, name in files.items():
+              if name and pathlib.Path(name + ".sig").exists():
+                  latest["platforms"][platform] = {
+                      "signature": pathlib.Path(name + ".sig").read_text().strip(),
+                      "url": f"https://github.com/{repo}/releases/download/{tag}/{name}",
+                  }
+                  added.append(platform)
+          pathlib.Path("latest.json").write_text(json.dumps(latest, indent=2) + "\n")
+          print("updater platforms:", ", ".join(latest["platforms"]), "| added:", ", ".join(added) or "none (no signing secret)")
+          EOF
+          gh release upload "$TAG" latest.json --clobber -R "$REPO"

@@ -66,7 +66,43 @@ pub async fn subscribe(auth: Auth, Body(req): Body<SubscribeReq>) -> ApiResult<S
     .bind(MAX_PER_USER)
     .execute(&auth.srv.db)
     .await?;
+    let service = reqwest::Url::parse(&req.endpoint).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_default();
+    tracing::info!(server = %auth.srv.slug, user = auth.user.id, %service, "push subscription saved");
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /push/test`: sends a test notification to the caller's own subscriptions, so they can
+/// check that notifications reach this device with ChitChat closed.
+pub async fn test(auth: Auth) -> ApiResult<Json<Value>> {
+    let subs: Vec<(String, String, String)> =
+        sqlx::query_as("SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?").bind(auth.user.id).fetch_all(&auth.srv.db).await?;
+    let server = crate::db::server_row(&auth.srv.db).await?.name;
+    let payload = json!({
+        "title": format!("ChitChat · {server}"),
+        "body": "Test notification: notifications reach this device.",
+        "slug": auth.srv.slug,
+        "tag": format!("{}:test", auth.srv.slug),
+    })
+    .to_string();
+    let (mut sent, mut failed, mut gone) = (0, 0, 0);
+    for (endpoint, p256dh, key) in &subs {
+        match push::send(endpoint, p256dh, key, payload.as_bytes(), "test", true).await {
+            Outcome::Sent => sent += 1,
+            Outcome::Failed => failed += 1,
+            Outcome::Gone => {
+                gone += 1;
+                forget(&auth.srv, endpoint).await?;
+            }
+        }
+    }
+    Ok(Json(json!({ "subscriptions": subs.len(), "sent": sent, "failed": failed, "gone": gone })))
+}
+
+/// The push service says this subscription no longer exists.
+async fn forget(srv: &ServerCtx, endpoint: &str) -> sqlx::Result<()> {
+    tracing::info!(server = %srv.slug, "push subscription expired (the push service no longer knows it); removed");
+    sqlx::query("DELETE FROM push_subscriptions WHERE endpoint = ?").bind(endpoint).execute(&srv.db).await?;
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -188,9 +224,7 @@ async fn deliver(srv: &ServerCtx, ch: &ChannelRow, msg: &MessageOut) -> anyhow::
         .to_string();
         let topic = format!("c{}", ch.id);
         match push::send(&endpoint, &p256dh, &auth, payload.as_bytes(), &topic, urgent).await {
-            Outcome::Gone => {
-                sqlx::query("DELETE FROM push_subscriptions WHERE endpoint = ?").bind(&endpoint).execute(&srv.db).await?;
-            }
+            Outcome::Gone => forget(srv, &endpoint).await?,
             Outcome::Sent | Outcome::Failed => {}
         }
     }
