@@ -29,3 +29,4 @@
 input[type=range]{padding:0;border:0;background:transparent;accent-color:var(--accent);min-height:32px;width:100%}
 .add-reaction{display:inline-flex;align-items:center;color:var(--muted);opacity:0;transition:opacity .1s}.message:hover .add-reaction,.add-reaction:focus-visible{opacity:1}@media(hover:none){.add-reaction{opacity:1}}
 .icon-button.call-live{color:var(--accent);background:#2b463c}
+.host-updated{display:flex;align-items:center;gap:12px;left:24px;right:auto;bottom:24px}

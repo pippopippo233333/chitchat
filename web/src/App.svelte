@@ -70,6 +70,9 @@
   let voiceSpeaking: Record<string, boolean> = {};
   // Private calls (docs/api.md 4p): who is ringing us, and names for calls we were invited into.
   let rings: Ring[] = [], callNames: Record<string, string> = {};
+  // The host's version when this page loaded; a different one after a reconnect means the host was updated.
+  let hostVersion = '', hostUpdated = false;
+  async function checkHostVersion() { try { const info = await api.host(); if (!info?.version) return; if (!hostVersion) hostVersion = info.version; else if (info.version !== hostVersion) hostUpdated = true; } catch { /* Checked again on the next reconnect. */ } }
   $: callRooms = snapshot ? [...new Set([...voiceStates.map(item => item.channel_id), $voiceStatus.channelId ?? '', ...rings.map(ring => ring.channel_id)])].map(id => callRoom(id, snapshot!, dms, callNames)).filter((room): room is Channel => !!room) : [];
   $: if (rings.length && snapshot) { const mine = $voiceStatus.channelId ?? voiceStates.find(item => item.user_id === snapshot?.user.id)?.channel_id; if (mine && rings.some(ring => ring.channel_id === mine)) rings = rings.filter(ring => ring.channel_id !== mine); }
   const voiceAvailable = secureVoiceAvailable();
@@ -278,7 +281,7 @@
     reacting = null; composeEmojiAnchor = null;
     hubHostServers=null;socialAbort?.abort();dms=[];readStates=[];preferences=defaultPreferences();preferencesLoaded=false;socialError='';socialLoading=false;viewingHistory=false;jumpId='';clearTimeout(ackTimer);clearTimeout(readRefreshTimer);ackInFlight.clear();notifiedIds.clear();
     aiRefreshVersion++; aiFlags = []; latestAiFlag = null; aiMore = false; aiLoading = false; aiLiveUpdates.clear();
-    voice.leave(); voiceStates = []; voiceSpeaking = {}; rings = []; callNames = {}; channelViews.clear();
+    voice.leave(); voiceStates = []; voiceSpeaking = {}; rings = []; callNames = {}; hostVersion = ''; hostUpdated = false; channelViews.clear();
     contextVersion++; historyVersion++; historyAbort?.abort(); connection?.stop(); connection = undefined;
     snapshot = null; activeId = ''; messages = []; draft = ''; reply = null; editing = null; typing = {}; liveChanges.clear();
     ownReactionEvents.clear(); cooldownUntil = 0; mutedUntil = 0;
@@ -366,7 +369,7 @@
   function startConnection() {
     connection?.stop();
     const version = contextVersion;
-    connection = new LiveConnection(api, event => { if (version === contextVersion) onEvent(event); }, next => { if (version === contextVersion) { status = next; if (next !== 'connected' && voice.view.channelId) voice.leave(false); } }, reason => { if (version === contextVersion) expire(reason); });
+    connection = new LiveConnection(api, event => { if (version === contextVersion) onEvent(event); }, next => { if (version === contextVersion) { status = next; if (next === 'connected') void checkHostVersion(); if (next !== 'connected' && voice.view.channelId) voice.leave(false); } }, reason => { if (version === contextVersion) expire(reason); });
     connection.connect();
   }
   function onEvent(event: Envelope) {
@@ -812,4 +815,5 @@
   {/key}
 {/if}
 {#if toast}<div class="toast notice" role="status">{toast}</div>{/if}
+{#if hostUpdated}<div class="toast notice host-updated" role="status"><span>ChitChat was updated on this server. Reload to get the new version.</span><button class="primary small" onclick={() => location.reload()}>Reload</button></div>{/if}
 <IncomingCall {rings} sound={deviceNotifications.sound} volume={deviceNotifications.volume} canAnswer={voiceAvailable && status === 'connected'} onAccept={ring => startCall(ring.channel_id)} onDecline={declineCall}/>

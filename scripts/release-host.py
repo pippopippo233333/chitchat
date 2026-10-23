@@ -32,6 +32,8 @@ REMOTE_DIR = "chitchat-release-build"
 
 
 def run(cmd, **kw):
+    # The Windows console may not have characters like "→" in the notes.
+    sys.stdout.reconfigure(errors="replace")
     print("+", " ".join(str(c) for c in cmd), flush=True)
     return subprocess.run(cmd, check=True, **kw)
 
