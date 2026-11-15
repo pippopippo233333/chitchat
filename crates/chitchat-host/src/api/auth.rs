@@ -45,6 +45,17 @@ async fn verify_password(password: String, hash: String) -> bool {
     tokio::task::spawn_blocking(move || PasswordHash::new(&hash).is_ok_and(|h| Argon2::default().verify_password(password.as_bytes(), &h).is_ok())).await.unwrap_or(false)
 }
 
+pub fn paused_error() -> ApiError {
+    ApiError::forbidden("server_paused", "This community is paused. An administrator can sign in to resume it.")
+}
+
+pub async fn require_active(srv: &ServerCtx, permissions: u64) -> ApiResult<()> {
+    if permissions & crate::perms::ADMINISTRATOR == 0 && db::server_paused(&srv.db).await? {
+        return Err(paused_error());
+    }
+    Ok(())
+}
+
 /// Looks up a session token and builds the caller's permissions.
 pub async fn authenticate(srv: Arc<ServerCtx>, token: &str) -> ApiResult<Auth> {
     let hash = token_hash(token);
@@ -53,8 +64,9 @@ pub async fn authenticate(srv: Arc<ServerCtx>, token: &str) -> ApiResult<Auth> {
     if super::moderation::user_banned(&srv, user.id).await? {
         return Err(ApiError::forbidden("banned", "You are banned from this server."));
     }
-    sqlx::query("UPDATE sessions SET last_used_at = ? WHERE token_hash = ? AND last_used_at < ?").bind(now_ms()).bind(&hash).bind(now_ms() - 60_000).execute(&srv.db).await?;
     let (perms, is_owner) = db::user_perms(&srv.db, user.id).await?;
+    require_active(&srv, perms).await?;
+    sqlx::query("UPDATE sessions SET last_used_at = ? WHERE token_hash = ? AND last_used_at < ?").bind(now_ms()).bind(&hash).bind(now_ms() - 60_000).execute(&srv.db).await?;
     Ok(Auth { srv, user, perms, is_owner, token_hash: hash })
 }
 
@@ -152,6 +164,7 @@ pub async fn register(Srv(srv): Srv, ConnectInfo(addr): ConnectInfo<SocketAddr>,
 
     let device_id = clean_device_id(&req.device_id);
     if !claiming_owner {
+        if server.paused { return Err(paused_error()); }
         super::moderation::check_join(&srv, addr.ip(), &device_id).await?;
         if !server.registration_open {
             return Err(ApiError::forbidden("registration_closed", "This server isn't accepting new accounts."));
@@ -186,7 +199,7 @@ pub async fn register(Srv(srv): Srv, ConnectInfo(addr): ConnectInfo<SocketAddr>,
     };
 
     let mut tx = srv.db.begin().await?;
-    let inserted = sqlx::query("INSERT INTO users (id, username, display_name, password_hash, created_at, signup_ip, signup_device) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    let inserted = sqlx::query("INSERT INTO users (id, username, display_name, password_hash, created_at, signup_ip, signup_device) SELECT ?, ?, ?, ?, ?, ?, ? WHERE ? OR NOT EXISTS (SELECT 1 FROM server WHERE paused)")
         .bind(user.id)
         .bind(&user.username)
         .bind(&user.display_name)
@@ -194,8 +207,12 @@ pub async fn register(Srv(srv): Srv, ConnectInfo(addr): ConnectInfo<SocketAddr>,
         .bind(user.created_at)
         .bind(&user.signup_ip)
         .bind(&user.signup_device)
+        .bind(claiming_owner)
         .execute(&mut *tx)
         .await;
+    if inserted.as_ref().is_ok_and(|result| result.rows_affected() == 0) {
+        return Err(paused_error());
+    }
     if let Err(e) = inserted {
         if e.as_database_error().is_some_and(|d| d.is_unique_violation()) {
             return Err(ApiError::new(StatusCode::CONFLICT, "username_taken", "That username is already taken."));
@@ -247,7 +264,8 @@ pub async fn login(Srv(srv): Srv, ConnectInfo(addr): ConnectInfo<SocketAddr>, Bo
         return Err(invalid());
     }
     let device_id = clean_device_id(&req.device_id);
-    let (_, is_owner) = db::user_perms(&srv.db, user.id).await?;
+    let (permissions, is_owner) = db::user_perms(&srv.db, user.id).await?;
+    require_active(&srv, permissions).await?;
     if !is_owner {
         if super::moderation::user_banned(&srv, user.id).await? {
             return Err(ApiError::forbidden("banned", "You are banned from this server."));

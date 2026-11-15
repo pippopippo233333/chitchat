@@ -36,6 +36,7 @@ pub struct Settings {
     has_password: bool,
     invite_only: bool,
     registration_open: bool,
+    paused: bool,
     listed: bool,
     discoverable: bool,
     voice_messages: bool,
@@ -63,6 +64,7 @@ impl From<&ServerRow> for Settings {
             has_password: r.password_hash.is_some(),
             invite_only: r.invite_only,
             registration_open: r.registration_open,
+            paused: r.paused,
             listed: r.listed,
             discoverable: r.discoverable,
             voice_messages: r.voice_messages,
@@ -93,6 +95,20 @@ async fn settings_out(auth: &Auth, row: &ServerRow) -> ApiResult<Settings> {
 pub async fn get_settings(auth: Auth) -> ApiResult<Json<Settings>> {
     auth.require(MANAGE_SERVER)?;
     Ok(Json(settings_out(&auth, &db::server_row(&auth.srv.db).await?).await?))
+}
+
+#[derive(Deserialize)]
+pub struct PauseReq {
+    paused: bool,
+}
+
+pub async fn set_paused(auth: Auth, Body(req): Body<PauseReq>) -> ApiResult<Json<Settings>> {
+    auth.require(crate::perms::ADMINISTRATOR)?;
+    sqlx::query("UPDATE server SET paused = ?").bind(req.paused).execute(&auth.srv.db).await?;
+    let row = db::server_row(&auth.srv.db).await?;
+    auth.srv.emit(Event::new("server_update", ServerOut::new(&auth.srv.slug, &row)).refresh());
+    audit(&auth.srv, Some(auth.user.id), "server_pause_changed", None, json!({"paused": row.paused})).await;
+    Ok(Json(settings_out(&auth, &row).await?))
 }
 
 #[derive(Deserialize)]

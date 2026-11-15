@@ -446,7 +446,17 @@ async fn migrate(pool: &SqlitePool) -> Result<()> {
         sqlx::raw_sql("PRAGMA user_version = 15").execute(&mut *tx).await?;
         tx.commit().await?;
     }
+    if version < 16 {
+        let mut tx = pool.begin().await?;
+        sqlx::raw_sql("ALTER TABLE server ADD COLUMN paused INTEGER NOT NULL DEFAULT 0; PRAGMA user_version = 16;")
+            .execute(&mut *tx).await?;
+        tx.commit().await?;
+    }
     Ok(())
+}
+
+pub async fn server_paused(pool: &SqlitePool) -> sqlx::Result<bool> {
+    sqlx::query_scalar("SELECT paused FROM server LIMIT 1").fetch_one(pool).await
 }
 
 /// The key that signs file links, created on first use.

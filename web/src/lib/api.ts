@@ -1,6 +1,6 @@
 import { randomId } from './random';
 export interface User { id: string; username: string; display_name: string; avatar_url: string | null; created_at?: string; status?: 'online' | 'away'; status_text?: string }
-export interface ServerSummary { slug: string; name: string; description: string; icon_url: string | null; requires_password: boolean; invite_only: boolean; registration_open: boolean; voice_messages?: boolean }
+export interface ServerSummary { slug: string; name: string; description: string; icon_url: string | null; requires_password: boolean; invite_only: boolean; registration_open: boolean; paused?: boolean; voice_messages?: boolean }
 export interface Server extends ServerSummary { id: string; owner_id: string; created_at: string }
 export interface HostInfo { name: string; version: string; servers: ServerSummary[] }
 export interface Category { id: string; name: string; position: number }
@@ -15,7 +15,7 @@ export interface CustomEmoji { id: string; name: string; url: string }
 export interface PinnedMessage { message: Message; pinned_by: string; pinned_at: string }
 export interface ChannelRule { role_id: string; allow: string; deny: string }
 export interface ChannelRules { inherited_from: string | null; overwrites: ChannelRule[] }
-export interface Settings { name: string; description: string; has_password: boolean; invite_only: boolean; registration_open: boolean; listed: boolean; discoverable?: boolean; voice_messages?: boolean; ip_mode: 'off' | 'allowlist'; max_file_mb: number; user_daily_mb: number; user_total_mb: number; server_total_mb: number; media_retention_days: number; storage_used_bytes: number; new_account_restrict_hours: number; max_accounts_per_ip: number; spam_messages_per_5s: number; spam_chars_per_minute: number; spam_max_repeats: number; spam_timeout_minutes: number }
+export interface Settings { name: string; description: string; has_password: boolean; invite_only: boolean; registration_open: boolean; paused?: boolean; listed: boolean; discoverable?: boolean; voice_messages?: boolean; ip_mode: 'off' | 'allowlist'; max_file_mb: number; user_daily_mb: number; user_total_mb: number; server_total_mb: number; media_retention_days: number; storage_used_bytes: number; new_account_restrict_hours: number; max_accounts_per_ip: number; spam_messages_per_5s: number; spam_chars_per_minute: number; spam_max_repeats: number; spam_timeout_minutes: number }
 export interface Invite { code: string; creator_id: string; max_uses: number | null; uses: number; expires_at: string | null; created_at: string }
 export interface InvitePreview { code: string; server: ServerSummary; expires_at: string | null; uses_left: number | null }
 export interface IpRule { id: string; cidr: string; action: 'allow' | 'block'; note: string; created_at: string }

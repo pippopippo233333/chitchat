@@ -231,7 +231,7 @@ async fn worker(srv: Arc<ServerCtx>, mut rx: mpsc::Receiver<Job>) {
             }
         }
         let cfg = srv.ai.config();
-        if !cfg.active() {
+        if !cfg.active() || crate::db::server_paused(&srv.db).await.unwrap_or(true) {
             continue;
         }
         let texts: Vec<&str> = jobs.iter().map(|j| j.content.as_str()).collect();

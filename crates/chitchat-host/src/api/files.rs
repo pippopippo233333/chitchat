@@ -299,6 +299,12 @@ pub struct Signed {
 /// `<video>` tags work without login headers. Supports range requests (seeking in videos).
 pub async fn serve(Srv(srv): Srv, Path(p): Path<FilePath>, Query(s): Query<Signed>, req: Request) -> Response {
     let not_found = || ApiError::not_found("not_found", "This file doesn't exist or the link expired.").into_response();
+    // These links carry no login, so there is no authenticated admin exception.
+    match db::server_paused(&srv.db).await {
+        Ok(true) => return super::auth::paused_error().into_response(),
+        Err(error) => return ApiError::from(error).into_response(),
+        Ok(false) => {}
+    }
     let Some(id) = crate::ids::parse(&p.id) else { return not_found() };
     if (p.variant != "file" && p.variant != "thumb") || !srv.verify_file_link(id, &p.variant, s.exp, &s.sig) {
         return not_found();

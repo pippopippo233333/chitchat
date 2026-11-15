@@ -87,6 +87,11 @@ async fn run(mut socket: WebSocket, srv: Arc<ServerCtx>, ip: IpAddr, host: Optio
     let user_id = auth.user.id;
     // Subscribe before the snapshot so nothing between the two is missed.
     let mut rx = srv.events.subscribe();
+    if let Err(error) = super::auth::require_active(&srv, auth.perms).await {
+        send_error(&mut socket, error.code, &error.message).await;
+        close(&mut socket, CLOSE_BANNED, error.code).await;
+        return;
+    }
     let ready = match super::server::ready_snapshot(&auth).await {
         Ok(r) => r,
         Err(_) => {
@@ -140,6 +145,11 @@ async fn run(mut socket: WebSocket, srv: Arc<ServerCtx>, ip: IpAddr, host: Optio
                 Ok(ev) => {
                     if ev.refresh_perms {
                         if let Ok((p, owner)) = db::user_perms(&srv.db, user_id).await {
+                                if let Err(error) = super::auth::require_active(&srv, p).await {
+                                    send_error(&mut socket, error.code, &error.message).await;
+                                    close(&mut socket, CLOSE_BANNED, error.code).await;
+                                    break;
+                                }
                                 auth.perms = p;
                                 auth.is_owner = owner;
                                 let channels = db::list_channels(&srv.db, user_id, p).await.unwrap_or_default();

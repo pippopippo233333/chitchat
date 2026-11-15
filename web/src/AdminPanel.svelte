@@ -62,6 +62,15 @@
       settings = await api.request<Settings>('/settings', 'PATCH', body);
     });
   }
+  function confirmPause(paused: boolean) {
+    confirm = {
+      title: paused ? 'Pause this server?' : 'Resume this server?',
+      detail: paused
+        ? 'Members will be disconnected. Administrators can still sign in and resume the server here.'
+        : 'Members will be able to sign in and use this server again.',
+      action: async () => { settings = await api.request<Settings>('/settings/pause', 'PUT', { paused }); },
+    };
+  }
   function editRole(role?: Role) { roleId = role?.id ?? ''; roleName = role?.name ?? ''; roleColor = role?.color ?? '#a4e4c2'; rolePermissions = role?.permissions ?? '259'; rolePosition = role?.position ?? 1; }
   async function saveRole(event: SubmitEvent) {
     event.preventDefault(); await run(async () => {
@@ -93,6 +102,14 @@
   <AiSettings {api} {snapshot}/>
 {:else if tab === 'Overview' && settings}
   <form onsubmit={saveSettings}><label>Server name<input bind:value={settings.name} required maxlength="64"/></label><label>Description<textarea bind:value={settings.description} maxlength="500"></textarea></label><label class="check-label"><input type="checkbox" bind:checked={settings.listed}/>List on this host’s landing page</label>{#if snapshot.is_owner}<label class="check-label"><input type="checkbox" bind:checked={settings.discoverable}/>Show in the server browser</label><p class="small muted">Shares this community’s name, description and member count with users on other hosts when host discovery is enabled.</p>{/if}<label class="check-label"><input type="checkbox" bind:checked={settings.registration_open}/>Allow new accounts</label><label class="check-label"><input type="checkbox" bind:checked={settings.invite_only}/>Require an invite for registration</label><p class="muted small">Closing registration also blocks invites. Existing members can still sign in.</p><button class="primary" disabled={busy}>Save overview</button></form>
+  {#if can(snapshot.permissions, 9, snapshot.is_owner) && settings.paused !== undefined}
+    <div class="button-row">
+      <button type="button" class="secondary" disabled={busy} onclick={() => confirmPause(!settings?.paused)}>
+        {settings.paused ? 'Resume server' : 'Pause server'}
+      </button>
+      <span class="muted">{settings.paused ? 'Paused · Administrators only' : 'Online'}</span>
+    </div>
+  {/if}
 {:else if tab === 'Security' && settings && snapshot.is_owner}
   <h3 class="section-heading">Community access password</h3><p class="small muted">{settings.has_password ? 'A password is required for new accounts.' : 'No community password is set.'} Invites do not bypass it.</p>
   <form onsubmit={event => { event.preventDefault(); void run(async () => { settings = await api.request<Settings>('/settings/password', 'PUT', { password: removePassword ? null : password }); password = ''; removePassword = false; }); }}><label class="check-label"><input type="checkbox" bind:checked={removePassword}/>Remove the community password</label>{#if !removePassword}<label>New community password<input type="password" bind:value={password} required minlength="4" maxlength="128" autocomplete="new-password"/></label>{/if}<button class="primary" disabled={busy}>Update access password</button></form>

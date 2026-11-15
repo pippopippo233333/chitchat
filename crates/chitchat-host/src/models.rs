@@ -22,6 +22,7 @@ pub struct ServerRow {
     pub password_hash: Option<String>,
     pub invite_only: bool,
     pub registration_open: bool,
+    pub paused: bool,
     pub listed: bool,
     pub owner_id: Option<i64>,
     pub setup_code: Option<String>,
@@ -172,6 +173,7 @@ pub struct ServerSummary {
     pub requires_password: bool,
     pub invite_only: bool,
     pub registration_open: bool,
+    pub paused: bool,
 }
 
 impl ServerSummary {
@@ -184,6 +186,7 @@ impl ServerSummary {
             requires_password: row.password_hash.is_some(),
             invite_only: row.invite_only,
             registration_open: row.registration_open,
+            paused: row.paused,
         }
     }
 }

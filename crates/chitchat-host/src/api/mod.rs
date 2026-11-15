@@ -87,6 +87,7 @@ pub fn router(host: Arc<Host>, web_dir: &Path) -> Router {
         .route("/roles/{id}", patch(roles::update).delete(roles::delete))
         .route("/members/{user_id}/roles/{role_id}", put(roles::add_member_role).delete(roles::remove_member_role))
         .route("/settings", get(admin::get_settings).patch(admin::patch_settings))
+        .route("/settings/pause", put(admin::set_paused))
         .route("/settings/password", put(admin::set_password))
         .route("/invites", get(admin::list_invites).post(admin::create_invite))
         .route("/invites/{code}", get(admin::preview_invite).delete(admin::delete_invite))
