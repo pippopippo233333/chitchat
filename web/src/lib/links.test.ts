@@ -16,6 +16,18 @@ describe('message links', () => {
   it('does not activate script, data, credential-bearing, or malformed links', () => {
     for (const text of ['javascript:alert(1)', 'data:text/html,<script>', 'https://user:password@example.com', 'https://']) expect(messageLinks(text).some(part => part.href)).toBe(false);
   });
+  it('renders labeled HTTPS links and bold text in scout messages', () => {
+    expect(messageLinks('**Active fights** · [Join E9EEB7](https://example.com/?server=id)')).toEqual([
+      { text: 'Active fights', bold: true },
+      { text: ' · ' },
+      { text: 'Join E9EEB7', href: 'https://example.com/?server=id' },
+    ]);
+  });
+  it('preserves unsafe labeled links as plain text', () => {
+    for (const text of ['[Example](javascript:alert(1))', '[Example](https://user:password@example.com)', '[Example]()']) {
+      expect(messageLinks(text)).toEqual([{ text }]);
+    }
+  });
   it('renders markup as text and exposes canonical hostnames for confirmation', () => {
     const text = '<img src=x onerror=alert(1)> https://Ã©xample.com';
     expect(messageLinks(text).map(part => part.text).join('')).toBe(text);
